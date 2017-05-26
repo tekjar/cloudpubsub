@@ -1,0 +1,6 @@
+[package]
+name = "cloudpubsub"
+version = "0.1.0"
+authors = ["tekjar <k.teza1@gmail.com>"]
+
+[dependencies]
