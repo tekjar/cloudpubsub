@@ -4,3 +4,10 @@ version = "0.1.0"
 authors = ["tekjar <k.teza1@gmail.com>"]
 
 [dependencies]
+rand = "0.3"
+quick-error = "1.1"
+slog = "2"
+slog-term = "2"
+slog-async = "2"
+mqtt3 = "0.1"
+openssl = { version = "0.9" }
