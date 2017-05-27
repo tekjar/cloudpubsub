@@ -1,8 +1,9 @@
 use std::io;
 use std::result;
 use std::net::TcpStream;
+use std::sync::mpsc::RecvError;
 
-use mqtt3;
+use mqtt3::{self, ConnectReturnCode};
 use openssl;
 
 pub type SslError = openssl::error::ErrorStack;
@@ -18,6 +19,9 @@ quick_error! {
             display("I/O error: {}", err)
             cause(err)
         }
+        TryRecv(err: RecvError) {
+            from()
+        }
         Mqtt3(err: mqtt3::Error) {
             from()
             display("mqtt3 error: {:?}", err)
@@ -31,5 +35,12 @@ quick_error! {
             from()
             display("handshake error: {:?}", err)
         }
+        MqttConnectionRefused(e: ConnectReturnCode) {
+            from()
+        }
+        Reconnect
+        PingTimeout
+        AwaitPingResp
+        ConnectionAbort
     }
 }

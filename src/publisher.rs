@@ -1,17 +1,16 @@
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
-// use std::net::{TcpStream, SocketAddr, Shutdown};
+use std::net::Shutdown;
 use std::collections::VecDeque;
 use std::thread;
-use std::io::Write;
+use std::io::{Write, ErrorKind};
 
-use mqtt3::{PacketIdentifier, Packet, Connect, Protocol};
+use mqtt3::{self, PacketIdentifier, Packet, Connect, Connack, Protocol, ConnectReturnCode};
 use slog::{Logger, Drain};
 use slog_term;
 
-use error::Result;
-use stream::
-NetworkStream;
+use error::{Result, Error};
+use stream::NetworkStream;
 use clientoptions::MqttOptions;
 use callback::{Message, MqttCallback};
 use super::MqttState;
@@ -70,6 +69,24 @@ impl Publisher {
         Ok(publisher)
     }
 
+    fn write(&mut self) -> Result<()> {
+        // @ Only read from `Network Request` channel when connected. Or else Empty
+        // return.
+        // @ Helps in case where Tcp connection happened but in MqttState::Handshake
+        // state.
+        if self.state == MqttState::Connected {
+            for _ in 0..50 {
+                match self.nw_request_rx.recv()? {
+                    PublishRequest::Shutdown => self.stream.shutdown(Shutdown::Both)?,
+                    PublishRequest::Disconnect => self.disconnect()?,
+                    // PublishRequest::Publish(m) => self.publish(m)?,
+                    _ => panic!("Invalid Write"),
+                };
+            }
+        }
+        Ok(())
+    }
+
     /// Creates a Tcp Connection, Sends Mqtt connect packet and sets state to
     /// Handshake mode if Tcp write and Mqtt connect succeeds
     fn try_reconnect(&mut self) -> Result<()> {
@@ -106,6 +123,174 @@ impl Publisher {
             username: self.opts.credentials.clone().map(|u| u.0),
             password: self.opts.credentials.clone().map(|p| p.1),
         })
+    }
+
+    pub fn wait(&mut self) -> Result<()> {
+        let packet = self.stream.read_packet();
+
+        if let Ok(packet) = packet {
+            if let Err(Error::MqttConnectionRefused(e)) = self.handle_packet(packet) {
+                Err(Error::MqttConnectionRefused(e))
+            } else {
+                Ok(())
+            }
+        } else if let Err(Error::Mqtt3(mqtt3::Error::Io(e))) = packet {
+            match e.kind() {
+                ErrorKind::TimedOut | ErrorKind::WouldBlock => {
+                    // TODO: Test if PINGRESPs are properly recieved before
+                    // next ping incase of high frequency incoming messages
+                    if let Err(e) = self.ping() {
+                        error!(self.logger, "PING error {:?}", e);
+                        self.unbind();
+                        return Err(Error::PingTimeout);
+                    }
+
+                    let _ = self.write();
+                    Ok(())
+                }
+                _ => {
+                    // Socket error are readily available here as soon as
+                    // broker closes its socket end. (But not inbetween n/w disconnection
+                    // and socket close at broker [i.e ping req timeout])
+
+                    // UPDATE: Lot of publishes are being written by the time this notified
+                    // the eventloop thread. Setting disconnect_block = true during write failure
+                    error!(self.logger, "At line = {:?}. Error in receiving packet. Error = {:?}", line!(), e);
+                    self.unbind();
+                    Err(Error::Reconnect)
+                }
+            }
+        } else {
+            error!(self.logger, "At line = {:?}. Error in receiving packet. Error = {:?}", line!(), packet);
+            self.unbind();
+            Err(Error::Reconnect)
+        }
+    }
+
+    fn handle_packet(&mut self, packet: Packet) -> Result<()> {
+        match self.state {
+            MqttState::Handshake => {
+                if let Packet::Connack(connack) = packet {
+                    self.handle_connack(connack)
+                } else {
+                    error!(self.logger, "Invalid Packet in Handshake State --> {:?}", packet);
+                    Err(Error::ConnectionAbort)
+                }
+            }
+            MqttState::Connected => {
+                match packet {
+                    Packet::Pingresp => {
+                        self.await_pingresp = false;
+                        Ok(())
+                    }
+                    Packet::Disconnect => Ok(()),
+                    // Packet::Puback(puback) => self.handle_puback(puback),
+                    _ => {
+                        error!(self.logger, "Invalid Packet in Connected State --> {:?}", packet);
+                        Ok(())
+                    }
+                }
+            }
+            MqttState::Disconnected => {
+                error!(self.logger, "Invalid Packet in Disconnected State --> {:?}", packet);
+                Err(Error::ConnectionAbort)
+            }
+        }
+    }
+
+    ///  Checks Mqtt connack packet's status code and sets Mqtt state
+    /// to `Connected` if successful
+    fn handle_connack(&mut self, connack: Connack) -> Result<()> {
+        let code = connack.code;
+
+        if code != ConnectReturnCode::Accepted {
+            error!(self.logger, "Failed to connect. Error = {:?}", code);
+            return Err(Error::MqttConnectionRefused(code));
+        }
+
+        if self.initial_connect {
+            self.initial_connect = false;
+        }
+
+        self.state = MqttState::Connected;
+
+        // Retransmit QoS1,2 queues after reconnection when clean_session = false
+        if !self.opts.clean_session {
+            // self.force_retransmit();
+        }
+
+        Ok(())
+    }
+
+    pub fn disconnect(&mut self) -> Result<()> {
+        let disconnect = Packet::Disconnect;
+        self.write_packet(disconnect)?;
+        Ok(())
+    }
+
+    fn ping(&mut self) -> Result<()> {
+        // debug!("client state --> {:?}, await_ping --> {}", self.state,
+        // self.await_ping);
+
+        match self.state {
+            MqttState::Connected => {
+                if let Some(keep_alive) = self.opts.keep_alive {
+                    let elapsed = self.last_flush.elapsed();
+
+                    if elapsed >= Duration::from_millis(((keep_alive * 1000) as f64 * 0.9) as u64) {
+                        if elapsed >= Duration::new((keep_alive + 1) as u64, 0) {
+                            return Err(Error::PingTimeout);
+                        }
+
+                        // @ Prevents half open connections. Tcp writes will buffer up
+                        // with out throwing any error (till a timeout) when internet
+                        // is down. Eventhough broker closes the socket, EOF will be
+                        // known only after reconnection.
+                        // We just unbind the socket if there in no pingresp before next ping
+                        // (What about case when pings aren't sent because of constant publishes
+                        // ?. A. Tcp write buffer gets filled up and write will be blocked for 10
+                        // secs and then error out because of timeout.)
+                        if self.await_pingresp {
+                            return Err(Error::AwaitPingResp);
+                        }
+
+                        let ping = Packet::Pingreq;
+                        self.await_pingresp = true;
+                        self.write_packet(ping)?;
+                    }
+                }
+            }
+
+            MqttState::Disconnected | MqttState::Handshake => error!(self.logger, "I won't ping. Client is in disconnected/handshake state"),
+        }
+        Ok(())
+    }
+
+    fn unbind(&mut self) {
+        let _ = self.stream.shutdown(Shutdown::Both);
+        self.await_pingresp = false;
+        self.state = MqttState::Disconnected;
+
+        // remove all the state
+        if self.opts.clean_session {
+            self.outgoing_pub.clear();
+            // self.outgoing_rec.clear();
+            // self.outgoing_rel.clear();
+            // self.outgoing_comp.clear();
+        }
+
+        error!(self.logger, "  Disconnected {:?}", self.opts.client_id);
+    }
+
+    // http://stackoverflow.com/questions/11115364/mqtt-messageid-practical-implementation
+    #[inline]
+    fn next_pkid(&mut self) -> PacketIdentifier {
+        let PacketIdentifier(mut pkid) = self.last_pkid;
+        if pkid == 65535 {
+            pkid = 0;
+        }
+        self.last_pkid = PacketIdentifier(pkid + 1);
+        self.last_pkid
     }
 
     // NOTE: write_all() will block indefinitely by default if
