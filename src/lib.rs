@@ -12,6 +12,7 @@ pub mod stream;
 pub mod clientoptions;
 pub mod callback;
 pub mod publisher;
+pub mod client;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MqttState {

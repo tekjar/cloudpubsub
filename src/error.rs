@@ -1,10 +1,12 @@
 use std::io;
 use std::result;
 use std::net::TcpStream;
-use std::sync::mpsc::RecvError;
+use std::sync::mpsc::{RecvError, TrySendError};
 
 use mqtt3::{self, ConnectReturnCode};
 use openssl;
+
+use publisher::PublishRequest;
 
 pub type SslError = openssl::error::ErrorStack;
 pub type HandShakeError = openssl::ssl::HandshakeError<TcpStream>;
@@ -20,6 +22,9 @@ quick_error! {
             cause(err)
         }
         TryRecv(err: RecvError) {
+            from()
+        }
+        TrySend(err: TrySendError<PublishRequest>) {
             from()
         }
         Mqtt3(err: mqtt3::Error) {
@@ -38,6 +43,7 @@ quick_error! {
         MqttConnectionRefused(e: ConnectReturnCode) {
             from()
         }
+        NoConnectionThread
         Reconnect
         PingTimeout
         AwaitPingResp

@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::thread;
 use std::io::{Write, ErrorKind};
 
-use mqtt3::{self, PacketIdentifier, Packet, Connect, Connack, Protocol, ConnectReturnCode};
+use mqtt3::{self, QoS, PacketIdentifier, Packet, Connect, Connack, Protocol, ConnectReturnCode};
 use slog::{Logger, Drain};
 use slog_term;
 
@@ -69,7 +69,7 @@ impl Publisher {
         Ok(publisher)
     }
 
-    fn write(&mut self) -> Result<()> {
+    pub fn run(&mut self) -> Result<()> {
         // @ Only read from `Network Request` channel when connected. Or else Empty
         // return.
         // @ Helps in case where Tcp connection happened but in MqttState::Handshake
@@ -79,8 +79,7 @@ impl Publisher {
                 match self.nw_request_rx.recv()? {
                     PublishRequest::Shutdown => self.stream.shutdown(Shutdown::Both)?,
                     PublishRequest::Disconnect => self.disconnect()?,
-                    // PublishRequest::Publish(m) => self.publish(m)?,
-                    _ => panic!("Invalid Write"),
+                    PublishRequest::Publish(m) => self.publish(m)?,
                 };
             }
         }
@@ -145,7 +144,7 @@ impl Publisher {
                         return Err(Error::PingTimeout);
                     }
 
-                    let _ = self.write();
+                    // let _ = self.write();
                     Ok(())
                 }
                 _ => {
@@ -219,6 +218,47 @@ impl Publisher {
             // self.force_retransmit();
         }
 
+        Ok(())
+    }
+
+    fn publish(&mut self, publish_message: Box<Message>) -> Result<()> {
+        let pkid = self.next_pkid();
+        let publish_message = publish_message.transform(Some(pkid), None);
+        let payload_len = publish_message.message.payload.len();
+        let mut size_exceeded = false;
+
+        match publish_message.message.qos {
+            QoS::AtLeastOnce => {
+                if payload_len > self.opts.storepack_sz {
+                    size_exceeded = true;
+                    warn!(self.logger, "Dropping packet: Size limit exceeded");
+                } else {
+                    self.outgoing_pub.push_back(publish_message.clone());
+                }
+
+                if self.outgoing_pub.len() > 50 * 50 {
+                    warn!(self.logger, ":( :( Outgoing Publish Queue Length growing bad --> {:?}", self.outgoing_pub.len());
+                }
+            }
+            _ => panic!("Invalid QoS"),
+        }
+
+        let packet = Packet::Publish(publish_message.message.to_pub(None, false));
+        match publish_message.message.qos {
+            QoS::AtMostOnce if !size_exceeded => self.write_packet(packet)?,
+            QoS::AtLeastOnce | QoS::ExactlyOnce if !size_exceeded => {
+                if self.state == MqttState::Connected {
+                    self.write_packet(packet)?;
+                } else {
+                    warn!(self.logger, "State = {:?}. Skip network write", self.state);
+                }
+            }
+            _ => {}
+        }
+
+        // error!("Queue --> {:?}\n\n", self.outgoing_pub);
+        // debug!("       Publish {:?} {:?} > {} bytes", message.qos,
+        // topic.clone().to_string(), message.payload.len());
         Ok(())
     }
 
