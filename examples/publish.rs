@@ -18,7 +18,9 @@ fn main() {
 
     // disconnections because of pingreq delays will be know during
     // subsequent publishes
-    client.publish("hello/world", vec![1, 2, 3, 4, 5]);
+    for i in 0..100 {
+        client.publish("hello/world", vec![1, 2, 3, 4, 5]);
+    }
 
     thread::sleep(Duration::from_secs(20));
 }

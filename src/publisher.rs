@@ -78,20 +78,17 @@ impl Publisher {
                         PublishRequest::Shutdown => self.stream.shutdown(Shutdown::Both)?,
                         PublishRequest::Disconnect => self.disconnect()?,
                         PublishRequest::Publish(m) => {
-                            self.publish(m)?;
+                            if let Err(e) = self.publish(m) {
+                                error!(self.logger, "Publish error. Error = {:?}", e);
+                                continue 'publisher;
+                            }
 
                             // you'll know of disconnections immediately here even when writes
                             // doesn't error out immediately after disonnection
                             if let Err(e) = self.await() {
                                 match e {
                                     Error::PingTimeout | Error::Reconnect => break 'publisher,
-                                    Error::MqttConnectionRefused(_) => {
-                                        if self.initial_connect {
-                                            return Err(e);
-                                        } else {
-                                            break 'publisher;
-                                        }
-                                    }
+                                    Error::MqttConnectionRefused(_) => break 'publisher,
                                     _ => continue 'publisher,
                                 }
                             }
@@ -105,6 +102,7 @@ impl Publisher {
                         Err(e) => {
                             error!(self.logger, "Couldn't connect. Error = {:?}", e);
                             if self.initial_connect {
+                                error!(self.logger, "Stopping publisher. Error = {:?}", e);
                                 return Err(e);
                             } else {
                                 continue 'reconnect;
@@ -171,16 +169,9 @@ impl Publisher {
         } else if let Err(Error::Mqtt3(mqtt3::Error::Io(e))) = packet {
             match e.kind() {
                 ErrorKind::TimedOut | ErrorKind::WouldBlock => {
-                    // TODO: Test if PINGRESPs are properly recieved before
-                    // next ping incase of high frequency incoming messages
-                    if let Err(e) = self.ping() {
-                        error!(self.logger, "PING error {:?}", e);
-                        self.unbind();
-                        return Err(Error::PingTimeout);
-                    }
-
-                    // let _ = self.write();
-                    Ok(())
+                    error!(self.logger, "Timeout waiting for ack. Error = {:?}", e);
+                    self.unbind();
+                    Err(Error::Reconnect)
                 }
                 _ => {
                     // Socket error are readily available here as soon as
@@ -189,23 +180,13 @@ impl Publisher {
 
                     // UPDATE: Lot of publishes are being written by the time this notified
                     // the eventloop thread. Setting disconnect_block = true during write failure
-                    error!(
-                        self.logger,
-                        "At line = {:?}. Error in receiving packet. Error = {:?}",
-                        line!(),
-                        e
-                    );
+                    error!(self.logger, "* Error receiving packet. Error = {:?}", e);
                     self.unbind();
                     Err(Error::Reconnect)
                 }
             }
         } else {
-            error!(
-                self.logger,
-                "At line = {:?}. Error in receiving packet. Error = {:?}",
-                line!(),
-                packet
-            );
+            error!(self.logger, "** Error receiving packet. Error = {:?}", packet);
             self.unbind();
             Err(Error::Reconnect)
         }
@@ -217,11 +198,7 @@ impl Publisher {
                 if let Packet::Connack(connack) = packet {
                     self.handle_connack(connack)
                 } else {
-                    error!(
-                        self.logger,
-                        "Invalid Packet in Handshake State --> {:?}",
-                        packet
-                    );
+                    error!(self.logger, "Invalid Packet in Handshake State --> {:?}", packet);
                     Err(Error::ConnectionAbort)
                 }
             }
@@ -234,21 +211,13 @@ impl Publisher {
                     Packet::Disconnect => Ok(()),
                     Packet::Puback(puback) => self.handle_puback(puback),
                     _ => {
-                        error!(
-                            self.logger,
-                            "Invalid Packet in Connected State --> {:?}",
-                            packet
-                        );
+                        error!(self.logger, "Invalid Packet in Connected State --> {:?}", packet);
                         Ok(())
                     }
                 }
             }
             MqttState::Disconnected => {
-                error!(
-                    self.logger,
-                    "Invalid Packet in Disconnected State --> {:?}",
-                    packet
-                );
+                error!(self.logger, "Invalid Packet in Disconnected State --> {:?}", packet);
                 Err(Error::ConnectionAbort)
             }
         }
@@ -294,17 +263,14 @@ impl Publisher {
                 }
 
                 if self.outgoing_pub.len() > 50 * 50 {
-                    warn!(
-                        self.logger,
-                        ":( :( Outgoing Publish Queue Length growing bad --> {:?}",
-                        self.outgoing_pub.len()
-                    );
+                    warn!(self.logger, ":( :( Outgoing Publish Queue Length growing bad --> {:?}", self.outgoing_pub.len());
                 }
             }
             _ => panic!("Invalid QoS"),
         }
 
         let packet = Packet::Publish(publish_message.message.to_pub(None, false));
+
         match publish_message.message.qos {
             QoS::AtMostOnce if !size_exceeded => self.write_packet(packet)?,
             QoS::AtLeastOnce | QoS::ExactlyOnce if !size_exceeded => {
@@ -317,9 +283,6 @@ impl Publisher {
             _ => {}
         }
 
-        // error!("Queue --> {:?}\n\n", self.outgoing_pub);
-        // debug!("       Publish {:?} {:?} > {} bytes", message.qos,
-        // topic.clone().to_string(), message.payload.len());
         Ok(())
     }
 
