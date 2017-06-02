@@ -18,14 +18,19 @@ pub struct SslContext {
 
 impl SslContext {
     pub fn new<CA, C, K>(ca: CA, client_pair: Option<(C, K)>, should_verify_ca: bool) -> Result<Self>
-        where CA: AsRef<Path>, C: AsRef<Path>, K: AsRef<Path>
+    where
+        CA: AsRef<Path>,
+        C: AsRef<Path>,
+        K: AsRef<Path>,
     {
         let mut ctx_builder = ssl::SslConnectorBuilder::new(SslMethod::tls())?;
         ctx_builder.builder_mut().set_ca_file(ca.as_ref())?;
 
         if let Some((cert, key)) = client_pair {
-            ctx_builder.builder_mut().set_certificate_file(cert, X509_FILETYPE_PEM)?;
-            ctx_builder.builder_mut().set_private_key_file(key, X509_FILETYPE_PEM)?;
+            ctx_builder.builder_mut()
+                       .set_certificate_file(cert, X509_FILETYPE_PEM)?;
+            ctx_builder.builder_mut()
+                       .set_private_key_file(key, X509_FILETYPE_PEM)?;
         }
 
         if should_verify_ca {
@@ -51,7 +56,10 @@ pub enum NetworkStream {
 
 impl NetworkStream {
     pub fn connect(addr: &str, ca: Option<PathBuf>, certs: Option<(PathBuf, PathBuf)>) -> Result<NetworkStream> {
-        let domain = addr.split(":").map(str::to_string).next().unwrap_or_default();
+        let domain = addr.split(":")
+                         .map(str::to_string)
+                         .next()
+                         .unwrap_or_default();
         let stream = TcpStream::connect(addr)?;
 
         if let Some(ca) = ca {

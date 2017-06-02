@@ -19,7 +19,12 @@ impl Message {
     }
 
     pub fn transform(&self, pid: Option<mqtt3::PacketIdentifier>, qos: Option<mqtt3::QoS>) -> Box<Message> {
-        Box::new(Message{ message: *self.message.transform(pid, qos), userdata: None})
+        Box::new(
+            Message {
+                message: *self.message.transform(pid, qos),
+                userdata: None,
+            }
+        )
     }
 }
 
@@ -40,14 +45,16 @@ impl MqttCallback {
     }
 
     pub fn on_message<F>(mut self, cb: F) -> Self
-        where F: Fn(Message) + Sync + Send + 'static
+    where
+        F: Fn(Message) + Sync + Send + 'static,
     {
         self.on_message = Some(Arc::new(Box::new(cb)));
         self
     }
 
     pub fn on_publish<F>(mut self, cb: F) -> Self
-        where F: Fn(Message) + Sync + Send + 'static
+    where
+        F: Fn(Message) + Sync + Send + 'static,
     {
         self.on_publish = Some(Arc::new(Box::new(cb)));
         self

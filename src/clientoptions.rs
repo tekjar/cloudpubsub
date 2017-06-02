@@ -45,7 +45,9 @@ impl MqttOptions {
     /// | **pub_q_len**           | 50                       |
     /// | **sub_q_len**           | 5                        |
     ///
-    pub fn new() -> MqttOptions { MqttOptions { ..Default::default() } }
+    pub fn new() -> MqttOptions {
+        MqttOptions { ..Default::default() }
+    }
 
     /// Number of seconds after which client should ping the broker
     /// if there is no other data exchange
@@ -108,7 +110,8 @@ impl MqttOptions {
 
     /// Set client cert and key for server to do client authentication
     pub fn set_client_certs<P>(mut self, certfile: P, keyfile: P) -> Self
-        where P: AsRef<Path>
+    where
+        P: AsRef<Path>,
     {
         let c = certfile.as_ref().to_path_buf();
         let k = keyfile.as_ref().to_path_buf();

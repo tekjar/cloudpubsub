@@ -20,3 +20,6 @@ pub enum MqttState {
     Connected,
     Disconnected,
 }
+
+pub use clientoptions::MqttOptions;
+pub use client::MqttClient;

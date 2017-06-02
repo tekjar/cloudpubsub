@@ -26,11 +26,13 @@ impl MqttClient {
 
         // This thread handles network reads (coz they are blocking) and
         // and sends them to event loop thread to handle mqtt state.
-        thread::spawn(move || -> Result<()> {
-            let _ = connection.run();
-            // error!("Network Thread Stopped !!!!!!!!!");
-            Ok(())
-        });
+        thread::spawn(
+            move || -> Result<()> {
+                let _ = connection.run();
+                // error!("Network Thread Stopped !!!!!!!!!");
+                Ok(())
+            }
+        );
 
         let client = MqttClient { nw_request_tx: nw_request_tx };
 
@@ -59,13 +61,7 @@ impl MqttClient {
         }
     }
 
-    fn _publish(&mut self,
-                topic: &str,
-                retain: bool,
-                qos: QoS,
-                payload: Arc<Vec<u8>>,
-                userdata: Option<Arc<Vec<u8>>>)
-                -> Result<()> {
+    fn _publish(&mut self, topic: &str, retain: bool, qos: QoS, payload: Arc<Vec<u8>>, userdata: Option<Arc<Vec<u8>>>) -> Result<()> {
 
         let topic = TopicPath::from_str(topic.to_string())?;
 
@@ -86,7 +82,8 @@ impl MqttClient {
         // TODO: Check message sanity here and return error if not
         match qos {
             QoS::AtMostOnce | QoS::AtLeastOnce | QoS::ExactlyOnce => {
-                self.nw_request_tx.try_send(PublishRequest::Publish(publish))?
+                self.nw_request_tx
+                    .try_send(PublishRequest::Publish(publish))?
             }
         };
 

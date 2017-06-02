@@ -38,10 +38,7 @@ pub struct Publisher {
 }
 
 impl Publisher {
-    pub fn connect(opts: MqttOptions,
-                   nw_request_rx: Receiver<PublishRequest>,
-                   callback: Option<MqttCallback>)
-                   -> Result<Self> {
+    pub fn connect(opts: MqttOptions, nw_request_rx: Receiver<PublishRequest>, callback: Option<MqttCallback>) -> Result<Self> {
 
         let mut publisher = Publisher {
             opts: opts,
@@ -65,7 +62,7 @@ impl Publisher {
         // ensures that user doesn't have access to this object
         // before mqtt connection
         publisher.try_reconnect()?;
-        //publisher.read_incoming()?;
+        publisher.await()?;
         Ok(publisher)
     }
 
@@ -75,14 +72,50 @@ impl Publisher {
         // @ Helps in case where Tcp connection happened but in MqttState::Handshake
         // state.
         if self.state == MqttState::Connected {
-            for _ in 0..50 {
-                match self.nw_request_rx.recv()? {
-                    PublishRequest::Shutdown => self.stream.shutdown(Shutdown::Both)?,
-                    PublishRequest::Disconnect => self.disconnect()?,
-                    PublishRequest::Publish(m) => self.publish(m)?,
-                };
+            loop {
+                'publisher: loop {
+                    match self.nw_request_rx.recv()? {
+                        PublishRequest::Shutdown => self.stream.shutdown(Shutdown::Both)?,
+                        PublishRequest::Disconnect => self.disconnect()?,
+                        PublishRequest::Publish(m) => {
+                            self.publish(m)?;
+
+                            // you'll know of disconnections immediately here even when writes
+                            // doesn't error out immediately after disonnection
+                            if let Err(e) = self.await() {
+                                match e {
+                                    Error::PingTimeout | Error::Reconnect => break 'publisher,
+                                    Error::MqttConnectionRefused(_) => {
+                                        if self.initial_connect {
+                                            return Err(e);
+                                        } else {
+                                            break 'publisher;
+                                        }
+                                    }
+                                    _ => continue 'publisher,
+                                }
+                            }
+                        }
+                    };
+                }
+
+                'reconnect: loop {
+                    match self.try_reconnect() {
+                        Ok(_) => break 'reconnect,
+                        Err(e) => {
+                            error!(self.logger, "Couldn't connect. Error = {:?}", e);
+                            if self.initial_connect {
+                                return Err(e);
+                            } else {
+                                continue 'reconnect;
+                            }
+                        }
+                    }
+                }
             }
         }
+
+        error!(self.logger, "Stopping publisher run loop");
         Ok(())
     }
 
@@ -95,8 +128,8 @@ impl Publisher {
         }
 
         let mut stream = NetworkStream::connect(&self.opts.addr, None, None)?;
-        stream.set_read_timeout(Some(Duration::new(1, 0)))?;
-        stream.set_write_timeout(Some(Duration::new(10, 0)))?;
+        stream.set_read_timeout(Some(Duration::new(3, 0)))?;
+        // stream.set_write_timeout(Some(Duration::new(10, 0)))?;
 
         self.stream = stream;
         let connect = self.generate_connect_packet();
@@ -113,18 +146,20 @@ impl Publisher {
             0
         };
 
-        Box::new(Connect {
-            protocol: Protocol::MQTT(4),
-            keep_alive: keep_alive,
-            client_id: self.opts.client_id.clone().unwrap(),
-            clean_session: self.opts.clean_session,
-            last_will: None,
-            username: self.opts.credentials.clone().map(|u| u.0),
-            password: self.opts.credentials.clone().map(|p| p.1),
-        })
+        Box::new(
+            Connect {
+                protocol: Protocol::MQTT(4),
+                keep_alive: keep_alive,
+                client_id: self.opts.client_id.clone().expect("No Client Id"),
+                clean_session: self.opts.clean_session,
+                last_will: None,
+                username: self.opts.credentials.clone().map(|u| u.0),
+                password: self.opts.credentials.clone().map(|p| p.1),
+            }
+        )
     }
 
-    pub fn wait(&mut self) -> Result<()> {
+    pub fn await(&mut self) -> Result<()> {
         let packet = self.stream.read_packet();
 
         if let Ok(packet) = packet {
@@ -154,13 +189,23 @@ impl Publisher {
 
                     // UPDATE: Lot of publishes are being written by the time this notified
                     // the eventloop thread. Setting disconnect_block = true during write failure
-                    error!(self.logger, "At line = {:?}. Error in receiving packet. Error = {:?}", line!(), e);
+                    error!(
+                        self.logger,
+                        "At line = {:?}. Error in receiving packet. Error = {:?}",
+                        line!(),
+                        e
+                    );
                     self.unbind();
                     Err(Error::Reconnect)
                 }
             }
         } else {
-            error!(self.logger, "At line = {:?}. Error in receiving packet. Error = {:?}", line!(), packet);
+            error!(
+                self.logger,
+                "At line = {:?}. Error in receiving packet. Error = {:?}",
+                line!(),
+                packet
+            );
             self.unbind();
             Err(Error::Reconnect)
         }
@@ -172,7 +217,11 @@ impl Publisher {
                 if let Packet::Connack(connack) = packet {
                     self.handle_connack(connack)
                 } else {
-                    error!(self.logger, "Invalid Packet in Handshake State --> {:?}", packet);
+                    error!(
+                        self.logger,
+                        "Invalid Packet in Handshake State --> {:?}",
+                        packet
+                    );
                     Err(Error::ConnectionAbort)
                 }
             }
@@ -183,15 +232,23 @@ impl Publisher {
                         Ok(())
                     }
                     Packet::Disconnect => Ok(()),
-                    // Packet::Puback(puback) => self.handle_puback(puback),
+                    Packet::Puback(puback) => self.handle_puback(puback),
                     _ => {
-                        error!(self.logger, "Invalid Packet in Connected State --> {:?}", packet);
+                        error!(
+                            self.logger,
+                            "Invalid Packet in Connected State --> {:?}",
+                            packet
+                        );
                         Ok(())
                     }
                 }
             }
             MqttState::Disconnected => {
-                error!(self.logger, "Invalid Packet in Disconnected State --> {:?}", packet);
+                error!(
+                    self.logger,
+                    "Invalid Packet in Disconnected State --> {:?}",
+                    packet
+                );
                 Err(Error::ConnectionAbort)
             }
         }
@@ -237,7 +294,11 @@ impl Publisher {
                 }
 
                 if self.outgoing_pub.len() > 50 * 50 {
-                    warn!(self.logger, ":( :( Outgoing Publish Queue Length growing bad --> {:?}", self.outgoing_pub.len());
+                    warn!(
+                        self.logger,
+                        ":( :( Outgoing Publish Queue Length growing bad --> {:?}",
+                        self.outgoing_pub.len()
+                    );
                 }
             }
             _ => panic!("Invalid QoS"),
@@ -259,6 +320,43 @@ impl Publisher {
         // error!("Queue --> {:?}\n\n", self.outgoing_pub);
         // debug!("       Publish {:?} {:?} > {} bytes", message.qos,
         // topic.clone().to_string(), message.payload.len());
+        Ok(())
+    }
+
+    fn handle_puback(&mut self, pkid: PacketIdentifier) -> Result<()> {
+        // debug!(self.logger, "*** PubAck --> Pkid({:?})\n--- Publish Queue =\n{:#?}\n\n", pkid, self.outgoing_pub);
+        debug!(self.logger, "Received puback for: {:?}", pkid);
+
+        let m = match self.outgoing_pub
+                          .iter()
+                          .position(|x| x.message.pid == Some(pkid)) {
+            Some(i) => {
+                if let Some(m) = self.outgoing_pub.remove(i) {
+                    Some(*m)
+                } else {
+                    None
+                }
+            }
+            None => {
+                error!(self.logger, "Oopssss..unsolicited ack --> {:?}\n", pkid);
+                None
+            }
+        };
+
+        if let Some(val) = m {
+            if let Some(ref callback) = self.callback {
+                if let Some(ref on_publish) = callback.on_publish {
+                    let on_publish = on_publish.clone();
+                    // self.pool.execute(move || on_publish(val));
+                }
+            }
+        }
+
+        debug!(
+            self.logger,
+            "Pub Q Len After Ack @@@ {:?}",
+            self.outgoing_pub.len()
+        );
         Ok(())
     }
 
@@ -301,7 +399,12 @@ impl Publisher {
                 }
             }
 
-            MqttState::Disconnected | MqttState::Handshake => error!(self.logger, "I won't ping. Client is in disconnected/handshake state"),
+            MqttState::Disconnected | MqttState::Handshake => {
+                error!(
+                    self.logger,
+                    "I won't ping. Client is in disconnected/handshake state"
+                )
+            }
         }
         Ok(())
     }
@@ -314,9 +417,6 @@ impl Publisher {
         // remove all the state
         if self.opts.clean_session {
             self.outgoing_pub.clear();
-            // self.outgoing_rec.clear();
-            // self.outgoing_rel.clear();
-            // self.outgoing_comp.clear();
         }
 
         error!(self.logger, "  Disconnected {:?}", self.opts.client_id);
