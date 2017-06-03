@@ -1,7 +1,7 @@
 use std::io;
 use std::result;
 use std::net::TcpStream;
-use std::sync::mpsc::{RecvError, TrySendError};
+use std::sync::mpsc::{RecvError, TrySendError, RecvTimeoutError};
 
 use mqtt3::{self, ConnectReturnCode};
 use openssl;
@@ -25,6 +25,9 @@ quick_error! {
             from()
         }
         TrySend(err: TrySendError<PublishRequest>) {
+            from()
+        }
+        RecvTimeout(err: RecvTimeoutError) {
             from()
         }
         Mqtt3(err: mqtt3::Error) {

@@ -1,4 +1,4 @@
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 use std::net::Shutdown;
 use std::collections::VecDeque;
@@ -74,7 +74,26 @@ impl Publisher {
         if self.state == MqttState::Connected {
             loop {
                 'publisher: loop {
-                    match self.nw_request_rx.recv()? {
+                    let pr = match self.nw_request_rx.recv_timeout(Duration::new(self.opts.keep_alive.unwrap() as u64, 0)) {
+                        Ok(v) => v,
+                        Err(RecvTimeoutError::Timeout) => {
+                            let _ = self.ping();
+                            if let Err(e) = self.await() {
+                                match e {
+                                    Error::PingTimeout | Error::Reconnect => break 'publisher,
+                                    Error::MqttConnectionRefused(_) => break 'publisher,
+                                    _ => continue 'publisher,
+                                }
+                            }
+                            continue 'publisher
+                        }
+                        Err(e) => {
+                            error!(self.logger, "Publisher recv error. Error = {:?}", e);
+                            return Err(e.into());
+                        }
+                    };
+
+                    match pr {
                         PublishRequest::Shutdown => self.stream.shutdown(Shutdown::Both)?,
                         PublishRequest::Disconnect => self.disconnect()?,
                         PublishRequest::Publish(m) => {
@@ -101,12 +120,7 @@ impl Publisher {
                         Ok(_) => break 'reconnect,
                         Err(e) => {
                             error!(self.logger, "Couldn't connect. Error = {:?}", e);
-                            if self.initial_connect {
-                                error!(self.logger, "Stopping publisher. Error = {:?}", e);
-                                return Err(e);
-                            } else {
-                                continue 'reconnect;
-                            }
+                            continue 'reconnect;
                         }
                     }
                 }
@@ -115,46 +129,6 @@ impl Publisher {
 
         error!(self.logger, "Stopping publisher run loop");
         Ok(())
-    }
-
-    /// Creates a Tcp Connection, Sends Mqtt connect packet and sets state to
-    /// Handshake mode if Tcp write and Mqtt connect succeeds
-    fn try_reconnect(&mut self) -> Result<()> {
-        if !self.initial_connect {
-            error!(self.logger, "  Will try Reconnect in 5 seconds");
-            thread::sleep(Duration::new(5, 0));
-        }
-
-        let mut stream = NetworkStream::connect(&self.opts.addr, None, None)?;
-        stream.set_read_timeout(Some(Duration::new(3, 0)))?;
-        // stream.set_write_timeout(Some(Duration::new(10, 0)))?;
-
-        self.stream = stream;
-        let connect = self.generate_connect_packet();
-        let connect = Packet::Connect(connect);
-        self.write_packet(connect)?;
-        self.state = MqttState::Handshake;
-        Ok(())
-    }
-
-    fn generate_connect_packet(&self) -> Box<Connect> {
-        let keep_alive = if let Some(dur) = self.opts.keep_alive {
-            dur
-        } else {
-            0
-        };
-
-        Box::new(
-            Connect {
-                protocol: Protocol::MQTT(4),
-                keep_alive: keep_alive,
-                client_id: self.opts.client_id.clone().expect("No Client Id"),
-                clean_session: self.opts.clean_session,
-                last_will: None,
-                username: self.opts.credentials.clone().map(|u| u.0),
-                password: self.opts.credentials.clone().map(|p| p.1),
-            }
-        )
     }
 
     pub fn await(&mut self) -> Result<()> {
@@ -190,6 +164,46 @@ impl Publisher {
             self.unbind();
             Err(Error::Reconnect)
         }
+    }
+
+    /// Creates a Tcp Connection, Sends Mqtt connect packet and sets state to
+    /// Handshake mode if Tcp write and Mqtt connect succeeds
+    fn try_reconnect(&mut self) -> Result<()> {
+        if !self.initial_connect {
+            error!(self.logger, "  Will try Reconnect in 5 seconds");
+            thread::sleep(Duration::new(5, 0));
+        }
+
+        let mut stream = NetworkStream::connect(&self.opts.addr, None, None)?;
+        stream.set_read_timeout(Some(Duration::new(3, 0)))?;
+        stream.set_write_timeout(Some(Duration::new(60, 0)))?;
+
+        self.stream = stream;
+        let connect = self.generate_connect_packet();
+        let connect = Packet::Connect(connect);
+        self.write_packet(connect)?;
+        self.state = MqttState::Handshake;
+        Ok(())
+    }
+
+    fn generate_connect_packet(&self) -> Box<Connect> {
+        let keep_alive = if let Some(dur) = self.opts.keep_alive {
+            dur
+        } else {
+            0
+        };
+
+        Box::new(
+            Connect {
+                protocol: Protocol::MQTT(4),
+                keep_alive: keep_alive,
+                client_id: self.opts.client_id.clone().expect("No Client Id"),
+                clean_session: self.opts.clean_session,
+                last_will: None,
+                username: self.opts.credentials.clone().map(|u| u.0),
+                password: self.opts.credentials.clone().map(|p| p.1),
+            }
+        )
     }
 
     fn handle_packet(&mut self, packet: Packet) -> Result<()> {
@@ -363,10 +377,7 @@ impl Publisher {
             }
 
             MqttState::Disconnected | MqttState::Handshake => {
-                error!(
-                    self.logger,
-                    "I won't ping. Client is in disconnected/handshake state"
-                )
+                error!(self.logger, "I won't ping. Client is in disconnected/handshake state")
             }
         }
         Ok(())
@@ -401,10 +412,11 @@ impl Publisher {
     // is evident when test cases are publishing lot of data when
     // ethernet cable is unplugged (mantests/half_open_publishes_and_reconnections
     // but not during mantests/ping_reqs_in_time_and_reconnections due to low
-    // frequency writes. 10 seconds migth be good default for write timeout ?)
+    // frequency writes. 60 seconds migth be good default for write timeout ?)
+    // https://stackoverflow.com/questions/11037867/socket-send-call-getting-blocked-for-so-long
     fn write_packet(&mut self, packet: Packet) -> Result<()> {
         if let Err(e) = self.stream.write_packet(&packet) {
-            warn!(self.logger, "{:?}", e);
+            warn!(self.logger, "Write error = {:?}", e);
             return Err(e.into());
         }
         self.flush()?;

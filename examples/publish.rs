@@ -22,5 +22,5 @@ fn main() {
         client.publish("hello/world", vec![1, 2, 3, 4, 5]);
     }
 
-    thread::sleep(Duration::from_secs(20));
+    thread::sleep(Duration::from_secs(31));
 }
