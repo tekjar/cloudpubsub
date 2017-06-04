@@ -270,19 +270,18 @@ impl Publisher {
         let pkid = self.next_pkid();
         let publish_message = publish_message.transform(Some(pkid), None);
         let payload_len = publish_message.message.payload.len();
-        let mut size_exceeded = false;
 
         match publish_message.message.qos {
             QoS::AtLeastOnce => {
                 if payload_len > self.opts.storepack_sz {
-                    size_exceeded = true;
-                    warn!(self.logger, "Dropping packet: Size limit exceeded");
+                    warn!(self.logger, "Size limit exceeded. Dropping packet: {:?}", publish_message);
+                    return Ok(())
                 } else {
                     self.outgoing_pub.push_back(publish_message.clone());
                 }
 
                 if self.outgoing_pub.len() > 50 * 50 {
-                    warn!(self.logger, ":( :( Outgoing Publish Queue Length growing bad --> {:?}", self.outgoing_pub.len());
+                    warn!(self.logger, ":( :( Outgoing publish queue length growing bad --> {:?}", self.outgoing_pub.len());
                 }
             }
             _ => panic!("Invalid QoS"),
@@ -290,16 +289,10 @@ impl Publisher {
 
         let packet = Packet::Publish(publish_message.message.to_pub(None, false));
 
-        match publish_message.message.qos {
-            QoS::AtMostOnce if !size_exceeded => self.write_packet(packet)?,
-            QoS::AtLeastOnce | QoS::ExactlyOnce if !size_exceeded => {
-                if self.state == MqttState::Connected {
-                    self.write_packet(packet)?;
-                } else {
-                    warn!(self.logger, "State = {:?}. Skip network write", self.state);
-                }
-            }
-            _ => {}
+        if self.state == MqttState::Connected {
+            self.write_packet(packet)?;
+        } else {
+            warn!(self.logger, "State = {:?}. Skipping network write", self.state);
         }
 
         Ok(())
@@ -320,7 +313,7 @@ impl Publisher {
                 }
             }
             None => {
-                error!(self.logger, "Oopssss..unsolicited ack --> {:?}\n", pkid);
+                error!(self.logger, "Oopssss..unsolicited ack --> {:?}", pkid);
                 None
             }
         };
