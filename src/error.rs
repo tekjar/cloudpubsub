@@ -46,6 +46,7 @@ quick_error! {
         MqttConnectionRefused(e: ConnectReturnCode) {
             from()
         }
+        PacketSizeLimitExceeded
         NoConnectionThread
         Reconnect
         PingTimeout

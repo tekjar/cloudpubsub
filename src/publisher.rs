@@ -102,6 +102,10 @@ impl Publisher {
                         PublishRequest::Shutdown => self.stream.shutdown(Shutdown::Both)?,
                         PublishRequest::Disconnect => self.disconnect()?,
                         PublishRequest::Publish(m) => {
+                            // Ignore publish error, If the errors are because of n/w disonnections,
+                            // they'll be detected during 'await'
+                            // TODO: Handle 'write_all' timeout errors araised due to slow consumer
+                            // (or) network.
                             if let Err(e) = self.publish(m) {
                                 error!(self.logger, "Publish error. Error = {:?}", e);
                                 continue 'publisher;
@@ -124,7 +128,7 @@ impl Publisher {
                     match self.try_reconnect() {
                         Ok(_) => break 'reconnect,
                         Err(e) => {
-                            error!(self.logger, "Couldn't connect. Error = {:?}", e);
+                            error!(self.logger, "Try Reconnect Failed. Error = {:?}", e);
                             continue 'reconnect;
                         }
                     }
@@ -136,6 +140,7 @@ impl Publisher {
         Ok(())
     }
 
+    // Awaits for an incoming packet and handles internal states appropriately
     pub fn await(&mut self) -> Result<()> {
         let packet = self.stream.read_packet();
 
@@ -260,7 +265,7 @@ impl Publisher {
 
         // Retransmit QoS1,2 queues after reconnection when clean_session = false
         if !self.opts.clean_session {
-            // self.force_retransmit();
+            self.force_retransmit()?;
         }
 
         Ok(())
@@ -275,7 +280,7 @@ impl Publisher {
             QoS::AtLeastOnce => {
                 if payload_len > self.opts.storepack_sz {
                     warn!(self.logger, "Size limit exceeded. Dropping packet: {:?}", publish_message);
-                    return Ok(())
+                    return Err(Error::PacketSizeLimitExceeded)
                 } else {
                     self.outgoing_pub.push_back(publish_message.clone());
                 }
@@ -374,6 +379,27 @@ impl Publisher {
                 error!(self.logger, "I won't ping. Client is in disconnected/handshake state")
             }
         }
+        Ok(())
+    }
+
+    // Spec says that client (for QoS > 0, persistant session [clean session = 0])
+    // should retransmit all the unacked publishes and pubrels after reconnection.
+    fn force_retransmit(&mut self) -> Result<()> {
+        // Cloning because iterating and removing isn't possible.
+        // Iterating over indexes and and removing elements messes
+        // up the remove sequence
+        let mut outgoing_pub = self.outgoing_pub.clone();
+        // debug!("*** Force Retransmission. Publish Queue =\n{:#?}\n\n", outgoing_pub);
+        self.outgoing_pub.clear();
+
+        while let Some(message) = outgoing_pub.pop_front() {
+            if let Err(e) = self.publish(message) {
+                error!(self.logger, "Publish error during retransmission. Skipping. Error = {:?}", e);
+                continue
+            }
+            self.await()?
+        }
+
         Ok(())
     }
 
