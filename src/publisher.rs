@@ -8,6 +8,7 @@ use std::io::{Write, ErrorKind};
 use mqtt3::{self, QoS, PacketIdentifier, Packet, Connect, Connack, Protocol, ConnectReturnCode};
 use slog::{Logger, Drain};
 use slog_term;
+use threadpool::ThreadPool;
 
 use error::{Result, Error};
 use stream::NetworkStream;
@@ -35,6 +36,8 @@ pub struct Publisher {
     pub outgoing_pub: VecDeque<(Box<Message>)>,
     pub no_of_reconnections: u32,
     pub logger: Logger,
+    // thread pool to execute puback callbacks
+    pub pool: ThreadPool,
 }
 
 impl Publisher {
@@ -55,6 +58,8 @@ impl Publisher {
             callback: callback,
             no_of_reconnections: 0,
             logger: publisher_logger(),
+
+            pool: ThreadPool::new(2),
         };
 
         // Make initial tcp connection, send connect packet and
@@ -324,16 +329,12 @@ impl Publisher {
             if let Some(ref callback) = self.callback {
                 if let Some(ref on_publish) = callback.on_publish {
                     let on_publish = on_publish.clone();
-                    // self.pool.execute(move || on_publish(val));
+                        self.pool.execute(move || on_publish(val));
                 }
             }
         }
 
-        debug!(
-            self.logger,
-            "Pub Q Len After Ack @@@ {:?}",
-            self.outgoing_pub.len()
-        );
+        debug!(self.logger, "Pub Q Len After Ack @@@ {:?}", self.outgoing_pub.len());
         Ok(())
     }
 

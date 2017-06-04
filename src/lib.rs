@@ -6,6 +6,9 @@ extern crate slog_term;
 #[macro_use]
 extern crate quick_error;
 extern crate openssl;
+#[macro_use]
+extern crate lazy_static;
+extern crate threadpool;
 
 pub mod error;
 pub mod stream;

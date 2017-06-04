@@ -11,3 +11,5 @@ slog-term = "2"
 slog-async = "2"
 mqtt3 = "0.1"
 openssl = { version = "0.9" }
+lazy_static = "*"
+threadpool = "1"
