@@ -72,6 +72,7 @@ impl Publisher {
     }
 
     pub fn run(&mut self) -> Result<()> {
+        let timeout = Duration::new(self.opts.keep_alive.unwrap() as u64, 0);
         // @ Only read from `Network Request` channel when connected. Or else Empty
         // return.
         // @ Helps in case where Tcp connection happened but in MqttState::Handshake
@@ -79,7 +80,7 @@ impl Publisher {
         if self.state == MqttState::Connected {
             loop {
                 'publisher: loop {
-                    let pr = match self.nw_request_rx.recv_timeout(Duration::new(self.opts.keep_alive.unwrap() as u64, 0)) {
+                    let pr = match self.nw_request_rx.recv_timeout(timeout) {
                         Ok(v) => v,
                         Err(RecvTimeoutError::Timeout) => {
                             let _ = self.ping();
@@ -126,7 +127,17 @@ impl Publisher {
 
                 'reconnect: loop {
                     match self.try_reconnect() {
-                        Ok(_) => break 'reconnect,
+                        Ok(_) => {
+                            if let Err(e) = self.await() {
+                                match e {
+                                    Error::PingTimeout | Error::Reconnect => continue 'reconnect,
+                                    Error::MqttConnectionRefused(_) => continue 'reconnect,
+                                    _ => continue 'reconnect,
+                                }
+                            } else {
+                                break 'reconnect
+                            }
+                        }
                         Err(e) => {
                             error!(self.logger, "Try Reconnect Failed. Error = {:?}", e);
                             continue 'reconnect;

@@ -18,7 +18,7 @@ fn main() {
 
     let mut client = MqttClient::start(options, Some(on_publish)).expect("Start Error");
 
-    for i in 0..1000 {
+    for i in 0..10000 {
         client.publish("hello/world", vec![1, 2, 3, 4, 5]);
     }
 
