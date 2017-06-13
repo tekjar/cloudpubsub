@@ -6,8 +6,6 @@ use std::thread;
 use std::io::{Write, ErrorKind};
 
 use mqtt3::{self, QoS, PacketIdentifier, Packet, Connect, Connack, Protocol, ConnectReturnCode};
-use slog::{Logger, Drain};
-use slog_term;
 use threadpool::ThreadPool;
 
 use error::{Result, Error};
@@ -35,7 +33,7 @@ pub struct Publisher {
     pub callback: Option<MqttCallback>,
     pub outgoing_pub: VecDeque<(Box<Message>)>,
     pub no_of_reconnections: u32,
-    pub logger: Logger,
+
     // thread pool to execute puback callbacks
     pub pool: ThreadPool,
 }
@@ -57,7 +55,6 @@ impl Publisher {
 
             callback: callback,
             no_of_reconnections: 0,
-            logger: publisher_logger(),
 
             pool: ThreadPool::new(2),
         };
@@ -94,7 +91,7 @@ impl Publisher {
                             continue 'publisher
                         }
                         Err(e) => {
-                            error!(self.logger, "Publisher recv error. Error = {:?}", e);
+                            error!("Publisher recv error. Error = {:?}", e);
                             return Err(e.into());
                         }
                     };
@@ -108,7 +105,7 @@ impl Publisher {
                             // TODO: Handle 'write_all' timeout errors araised due to slow consumer
                             // (or) network.
                             if let Err(e) = self.publish(m) {
-                                error!(self.logger, "Publish error. Error = {:?}", e);
+                                error!("Publish error. Error = {:?}", e);
                                 continue 'publisher;
                             }
 
@@ -139,7 +136,7 @@ impl Publisher {
                             }
                         }
                         Err(e) => {
-                            error!(self.logger, "Try Reconnect Failed. Error = {:?}", e);
+                            error!("Try Reconnect Failed. Error = {:?}", e);
                             continue 'reconnect;
                         }
                     }
@@ -147,7 +144,7 @@ impl Publisher {
             }
         }
 
-        error!(self.logger, "Stopping publisher run loop");
+        error!("Stopping publisher run loop");
         Ok(())
     }
 
@@ -164,7 +161,7 @@ impl Publisher {
         } else if let Err(Error::Mqtt3(mqtt3::Error::Io(e))) = packet {
             match e.kind() {
                 ErrorKind::TimedOut | ErrorKind::WouldBlock => {
-                    error!(self.logger, "Timeout waiting for ack. Error = {:?}", e);
+                    error!("Timeout waiting for ack. Error = {:?}", e);
                     self.unbind();
                     Err(Error::Reconnect)
                 }
@@ -175,13 +172,13 @@ impl Publisher {
 
                     // UPDATE: Lot of publishes are being written by the time this notified
                     // the eventloop thread. Setting disconnect_block = true during write failure
-                    error!(self.logger, "* Error receiving packet. Error = {:?}", e);
+                    error!("* Error receiving packet. Error = {:?}", e);
                     self.unbind();
                     Err(Error::Reconnect)
                 }
             }
         } else {
-            error!(self.logger, "** Error receiving packet. Error = {:?}", packet);
+            error!("** Error receiving packet. Error = {:?}", packet);
             self.unbind();
             Err(Error::Reconnect)
         }
@@ -191,7 +188,7 @@ impl Publisher {
     /// Handshake mode if Tcp write and Mqtt connect succeeds
     fn try_reconnect(&mut self) -> Result<()> {
         if !self.initial_connect {
-            error!(self.logger, "  Will try Reconnect in 5 seconds");
+            error!("  Will try Reconnect in 5 seconds");
             thread::sleep(Duration::new(5, 0));
         }
 
@@ -233,7 +230,7 @@ impl Publisher {
                 if let Packet::Connack(connack) = packet {
                     self.handle_connack(connack)
                 } else {
-                    error!(self.logger, "Invalid Packet in Handshake State --> {:?}", packet);
+                    error!("Invalid Packet in Handshake State --> {:?}", packet);
                     Err(Error::ConnectionAbort)
                 }
             }
@@ -246,13 +243,13 @@ impl Publisher {
                     Packet::Disconnect => Ok(()),
                     Packet::Puback(puback) => self.handle_puback(puback),
                     _ => {
-                        error!(self.logger, "Invalid Packet in Connected State --> {:?}", packet);
+                        error!("Invalid Packet in Connected State --> {:?}", packet);
                         Ok(())
                     }
                 }
             }
             MqttState::Disconnected => {
-                error!(self.logger, "Invalid Packet in Disconnected State --> {:?}", packet);
+                error!("Invalid Packet in Disconnected State --> {:?}", packet);
                 Err(Error::ConnectionAbort)
             }
         }
@@ -264,7 +261,7 @@ impl Publisher {
         let code = connack.code;
 
         if code != ConnectReturnCode::Accepted {
-            error!(self.logger, "Failed to connect. Error = {:?}", code);
+            error!("Failed to connect. Error = {:?}", code);
             return Err(Error::MqttConnectionRefused(code));
         }
 
@@ -290,14 +287,14 @@ impl Publisher {
         match publish_message.message.qos {
             QoS::AtLeastOnce => {
                 if payload_len > self.opts.storepack_sz {
-                    warn!(self.logger, "Size limit exceeded. Dropping packet: {:?}", publish_message);
+                    warn!("Size limit exceeded. Dropping packet: {:?}", publish_message);
                     return Err(Error::PacketSizeLimitExceeded)
                 } else {
                     self.outgoing_pub.push_back(publish_message.clone());
                 }
 
                 if self.outgoing_pub.len() > 50 * 50 {
-                    warn!(self.logger, ":( :( Outgoing publish queue length growing bad --> {:?}", self.outgoing_pub.len());
+                    warn!(":( :( Outgoing publish queue length growing bad --> {:?}", self.outgoing_pub.len());
                 }
             }
             _ => panic!("Invalid QoS"),
@@ -308,15 +305,15 @@ impl Publisher {
         if self.state == MqttState::Connected {
             self.write_packet(packet)?;
         } else {
-            warn!(self.logger, "State = {:?}. Skipping network write", self.state);
+            warn!("State = {:?}. Skipping network write", self.state);
         }
 
         Ok(())
     }
 
     fn handle_puback(&mut self, pkid: PacketIdentifier) -> Result<()> {
-        // debug!(self.logger, "*** PubAck --> Pkid({:?})\n--- Publish Queue =\n{:#?}\n\n", pkid, self.outgoing_pub);
-        debug!(self.logger, "Received puback for: {:?}", pkid);
+        // debug!("*** PubAck --> Pkid({:?})\n--- Publish Queue =\n{:#?}\n\n", pkid, self.outgoing_pub);
+        debug!("Received puback for: {:?}", pkid);
 
         let m = match self.outgoing_pub
                           .iter()
@@ -329,7 +326,7 @@ impl Publisher {
                 }
             }
             None => {
-                error!(self.logger, "Oopssss..unsolicited ack --> {:?}", pkid);
+                error!("Oopssss..unsolicited ack --> {:?}", pkid);
                 None
             }
         };
@@ -343,7 +340,7 @@ impl Publisher {
             }
         }
 
-        debug!(self.logger, "Pub Q Len After Ack @@@ {:?}", self.outgoing_pub.len());
+        debug!("Pub Q Len After Ack @@@ {:?}", self.outgoing_pub.len());
         Ok(())
     }
 
@@ -387,7 +384,7 @@ impl Publisher {
             }
 
             MqttState::Disconnected | MqttState::Handshake => {
-                error!(self.logger, "I won't ping. Client is in disconnected/handshake state")
+                error!("I won't ping. Client is in disconnected/handshake state")
             }
         }
         Ok(())
@@ -405,7 +402,7 @@ impl Publisher {
 
         while let Some(message) = outgoing_pub.pop_front() {
             if let Err(e) = self.publish(message) {
-                error!(self.logger, "Publish error during retransmission. Skipping. Error = {:?}", e);
+                error!("Publish error during retransmission. Skipping. Error = {:?}", e);
                 continue
             }
             self.await()?
@@ -424,7 +421,7 @@ impl Publisher {
             self.outgoing_pub.clear();
         }
 
-        error!(self.logger, "  Disconnected {:?}", self.opts.client_id);
+        error!("  Disconnected {:?}", self.opts.client_id);
     }
 
     // http://stackoverflow.com/questions/11115364/mqtt-messageid-practical-implementation
@@ -447,7 +444,7 @@ impl Publisher {
     // https://stackoverflow.com/questions/11037867/socket-send-call-getting-blocked-for-so-long
     fn write_packet(&mut self, packet: Packet) -> Result<()> {
         if let Err(e) = self.stream.write_packet(&packet) {
-            warn!(self.logger, "Write error = {:?}", e);
+            warn!("Write error = {:?}", e);
             return Err(e.into());
         }
         self.flush()?;
@@ -459,14 +456,4 @@ impl Publisher {
         self.last_flush = Instant::now();
         Ok(())
     }
-}
-
-
-fn publisher_logger() -> Logger {
-    use std::sync::Mutex;
-
-    let decorator = slog_term::TermDecorator::new().build();
-    let drain = slog_term::FullFormat::new(decorator).build().fuse();
-    let drain = Mutex::new(drain).fuse();
-    Logger::root(drain, o!("publisher" => env!("CARGO_PKG_VERSION")))
 }

@@ -29,7 +29,7 @@ impl MqttClient {
         thread::spawn(
             move || -> Result<()> {
                 let _ = connection.run();
-                // error!("Network Thread Stopped !!!!!!!!!");
+                error!("Network Thread Stopped !!!!!!!!!");
                 Ok(())
             }
         );
@@ -50,7 +50,7 @@ impl MqttClient {
                     // break immediately if rx is dropped
                     &TrySendError::Disconnected(_) => return Err(Error::NoConnectionThread),
                     &TrySendError::Full(_) => {
-                        // warn!("Request Queue Full !!!!!!!!");
+                        warn!("Request Queue Full !!!!!!!!");
                         thread::sleep(Duration::new(2, 0));
                         continue;
                     }

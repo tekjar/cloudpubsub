@@ -1,13 +1,10 @@
 extern crate rand;
 extern crate mqtt3;
 #[macro_use]
-extern crate slog;
-extern crate slog_term;
+extern crate log;
 #[macro_use]
 extern crate quick_error;
 extern crate openssl;
-#[macro_use]
-extern crate lazy_static;
 extern crate threadpool;
 
 pub mod error;
