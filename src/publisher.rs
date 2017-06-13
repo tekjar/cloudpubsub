@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::thread;
 use std::io::{Write, ErrorKind};
 
-use mqtt3::{self, QoS, PacketIdentifier, Packet, Connect, Connack, Protocol, ConnectReturnCode};
+use mqtt3::{self, MqttWrite, MqttRead, QoS, PacketIdentifier, Packet, Connect, Connack, Protocol, ConnectReturnCode};
 use threadpool::ThreadPool;
 
 use error::{Result, Error};
@@ -158,7 +158,7 @@ impl Publisher {
             } else {
                 Ok(())
             }
-        } else if let Err(Error::Mqtt3(mqtt3::Error::Io(e))) = packet {
+        } else if let Err(mqtt3::Error::Io(e)) = packet {
             match e.kind() {
                 ErrorKind::TimedOut | ErrorKind::WouldBlock => {
                     error!("Timeout waiting for ack. Error = {:?}", e);
@@ -192,7 +192,7 @@ impl Publisher {
             thread::sleep(Duration::new(5, 0));
         }
 
-        let mut stream = NetworkStream::connect(&self.opts.addr, None, None)?;
+        let mut stream = NetworkStream::connect(&self.opts.addr, self.opts.ca.clone(), self.opts.client_certs.clone())?;
         stream.set_read_timeout(Some(Duration::new(3, 0)))?;
         stream.set_write_timeout(Some(Duration::new(60, 0)))?;
 

@@ -112,6 +112,13 @@ impl MqttOptions {
         self
     }
 
+    pub fn set_ca<P>(mut self, cafile: P) -> Self
+        where P: AsRef<Path>
+    {
+        self.ca = Some(cafile.as_ref().to_path_buf());
+        self
+    }
+
     /// Set client cert and key for server to do client authentication
     pub fn set_client_certs<P>(mut self, certfile: P, keyfile: P) -> Self
     where

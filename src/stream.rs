@@ -7,7 +7,7 @@ use std::time::Duration;
 use openssl::ssl::{self, SslMethod, SSL_VERIFY_NONE, SSL_VERIFY_PEER};
 use openssl::x509::X509_FILETYPE_PEM;
 
-use mqtt3::{Packet, MqttWrite, MqttRead};
+use mqtt3::{MqttWrite, MqttRead};
 pub type SslStream = ssl::SslStream<TcpStream>;
 
 use error::Result;
@@ -27,10 +27,8 @@ impl SslContext {
         ctx_builder.builder_mut().set_ca_file(ca.as_ref())?;
 
         if let Some((cert, key)) = client_pair {
-            ctx_builder.builder_mut()
-                       .set_certificate_file(cert, X509_FILETYPE_PEM)?;
-            ctx_builder.builder_mut()
-                       .set_private_key_file(key, X509_FILETYPE_PEM)?;
+            ctx_builder.builder_mut().set_certificate_file(cert, X509_FILETYPE_PEM)?;
+            ctx_builder.builder_mut().set_private_key_file(key, X509_FILETYPE_PEM)?;
         }
 
         if should_verify_ca {
@@ -100,22 +98,6 @@ impl NetworkStream {
             NetworkStream::None => Err(io::Error::new(io::ErrorKind::Other, "No stream!")),
         }
     }
-
-    pub fn read_packet(&mut self) -> Result<Packet> {
-        match *self {
-            NetworkStream::Tcp(ref mut s) => Ok(s.read_packet()?),
-            NetworkStream::Tls(ref mut s) => Ok(s.get_mut().read_packet()?),
-            NetworkStream::None => Err(io::Error::new(io::ErrorKind::Other, "No stream!").into()),
-        }
-    }
-
-    pub fn write_packet(&mut self, packet: &Packet) -> Result<()> {
-        match *self {
-            NetworkStream::Tcp(ref mut s) => Ok(s.write_packet(packet)?),
-            NetworkStream::Tls(ref mut s) => Ok(s.get_mut().write_packet(packet)?),
-            NetworkStream::None => Err(io::Error::new(io::ErrorKind::Other, "No stream!").into()),
-        }
-    }
 }
 
 impl Read for NetworkStream {
@@ -145,3 +127,6 @@ impl Write for NetworkStream {
         }
     }
 }
+
+impl MqttRead for NetworkStream {}
+impl MqttWrite for NetworkStream {}
