@@ -61,6 +61,29 @@ impl MqttClient {
         }
     }
 
+    pub fn userdata_publish(&mut self, topic: &str, payload: Vec<u8>, userdata: Vec<u8>) -> Result<()> {
+        let payload = Arc::new(payload);
+        let userdata = Arc::new(userdata);
+        let mut ret_val;
+        loop {
+            let payload = payload.clone();
+            ret_val = self._publish(topic, payload, Some(userdata.clone()));
+            if let Err(Error::TrySend(ref e)) = ret_val {
+                match e {
+                    // break immediately if rx is dropped
+                    &TrySendError::Disconnected(_) => return Err(Error::NoConnectionThread),
+                    &TrySendError::Full(_) => {
+                        warn!("Request Queue Full !!!!!!!!");
+                        thread::sleep(Duration::new(2, 0));
+                        continue;
+                    }
+                }
+            } else {
+                return ret_val;
+            }
+        }
+    }
+
     fn _publish(&mut self, topic: &str, payload: Arc<Vec<u8>>, userdata: Option<Arc<Vec<u8>>>) -> Result<()> {
 
         let _ = TopicPath::from_str(topic.to_string())?;

@@ -336,7 +336,7 @@ impl Publisher {
             if let Some(ref callback) = self.callback {
                 if let Some(ref on_publish) = callback.on_publish {
                     let on_publish = on_publish.clone();
-                        self.pool.execute(move || on_publish(val));
+                    self.pool.execute(move || on_publish(val));
                 }
             }
         }

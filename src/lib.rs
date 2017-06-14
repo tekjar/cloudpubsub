@@ -23,4 +23,4 @@ pub enum MqttState {
 
 pub use clientoptions::MqttOptions;
 pub use client::MqttClient;
-pub use callback::MqttCallback;
+pub use callback::{MqttCallback, Message};

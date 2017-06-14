@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rand::{thread_rng, Rng};
 
-use cloudpubsub::{MqttOptions, MqttClient, MqttCallback};
+use cloudpubsub::{MqttOptions, MqttClient, MqttCallback, Message};
 
 fn main() {
     pretty_env_logger::init().unwrap();
@@ -22,8 +22,11 @@ fn main() {
     let count = Arc::new(AtomicUsize::new(0));
     let callback_count = count.clone();
 
-    let counter_cb = move |_| {
+    let counter_cb = move |m: Message| {
         callback_count.fetch_add(1, Ordering::SeqCst);
+        let ref userdata = *m.userdata.unwrap();
+        let userdata = String::from_utf8(userdata.clone()).unwrap();
+        assert_eq!("MYUNIQUEUSERDATA".to_string(), userdata);
     };
     let on_publish = MqttCallback::new().on_publish(counter_cb);
 
@@ -34,7 +37,7 @@ fn main() {
         let mut v = vec![0; len];
         thread_rng().fill_bytes(&mut v);
 
-        client.publish("hello/world", v);
+        client.userdata_publish("hello/world", v, "MYUNIQUEUSERDATA".to_string().into_bytes());
     }
 
     // verifies pingreqs and responses
@@ -47,7 +50,7 @@ fn main() {
         let mut v = vec![0; len];
         thread_rng().fill_bytes(&mut v);
 
-        client.publish("hello/world", v);
+        client.userdata_publish("hello/world", v, "MYUNIQUEUSERDATA".to_string().into_bytes());
     }
 
     thread::sleep(Duration::from_secs(31));
