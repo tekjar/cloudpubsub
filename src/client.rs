@@ -44,7 +44,7 @@ impl MqttClient {
         let mut ret_val;
         loop {
             let payload = payload.clone();
-            ret_val = self._publish(topic, false, QoS::AtLeastOnce, payload, None);
+            ret_val = self._publish(topic, payload, None);
             if let Err(Error::TrySend(ref e)) = ret_val {
                 match e {
                     // break immediately if rx is dropped
@@ -61,31 +61,19 @@ impl MqttClient {
         }
     }
 
-    fn _publish(&mut self, topic: &str, retain: bool, qos: QoS, payload: Arc<Vec<u8>>, userdata: Option<Arc<Vec<u8>>>) -> Result<()> {
+    fn _publish(&mut self, topic: &str, payload: Arc<Vec<u8>>, userdata: Option<Arc<Vec<u8>>>) -> Result<()> {
 
-        let topic = TopicPath::from_str(topic.to_string())?;
-
-        let message = mqtt3::Message {
-            topic: topic,
-            retain: retain,
-            qos: qos,
-            payload: payload,
-            pid: None,
-        };
+        let _ = TopicPath::from_str(topic.to_string())?;
 
         let publish = Message {
-            message: message,
+            topic: topic.to_string(),
+            payload: payload,
+            pkid: None,
             userdata: userdata,
         };
         let publish = Box::new(publish);
 
-        // TODO: Check message sanity here and return error if not
-        match qos {
-            QoS::AtMostOnce | QoS::AtLeastOnce | QoS::ExactlyOnce => {
-                self.nw_request_tx
-                    .try_send(PublishRequest::Publish(publish))?
-            }
-        };
+        self.nw_request_tx.try_send(PublishRequest::Publish(publish))?;
 
         Ok(())
     }

@@ -15,9 +15,11 @@ fn main() {
     pretty_env_logger::init().unwrap();
 
     let options = MqttOptions::new().set_client_id("tls-publisher-1")
+                                    .set_clean_session(false)
                                     .set_ca("/userdata/certs/dev/ca-chain.cert.pem")
                                     .set_client_certs("/userdata/certs/dev/RAVI-LOCAL-DEV.cert.pem", "/userdata/certs/dev/RAVI-LOCAL-DEV.key.pem")
                                     .set_broker("dev-mqtt-broker.atherengineering.in:5000");
+                                    // .set_broker("localhost:8883");
 
     let count = Arc::new(AtomicUsize::new(0));
     let callback_count = count.clone();

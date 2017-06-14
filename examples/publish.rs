@@ -15,6 +15,8 @@ fn main() {
     pretty_env_logger::init().unwrap();
 
     let options = MqttOptions::new().set_client_id("publisher-1")
+                                    .set_clean_session(false)
+                                    //.set_broker("dev-mqtt-broker.atherengineering.in:1883");
                                     .set_broker("localhost:1883");
 
     let count = Arc::new(AtomicUsize::new(0));

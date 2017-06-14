@@ -193,7 +193,7 @@ impl Publisher {
         }
 
         let mut stream = NetworkStream::connect(&self.opts.addr, self.opts.ca.clone(), self.opts.client_certs.clone())?;
-        stream.set_read_timeout(Some(Duration::new(60, 0)))?;
+        stream.set_read_timeout(Some(Duration::new(10, 0)))?;
         stream.set_write_timeout(Some(Duration::new(60, 0)))?;
 
         self.stream = stream;
@@ -280,27 +280,28 @@ impl Publisher {
     }
 
     fn publish(&mut self, publish_message: Box<Message>) -> Result<()> {
-        let pkid = self.next_pkid();
-        let publish_message = publish_message.transform(Some(pkid), None);
-        let payload_len = publish_message.message.payload.len();
+        // Assign next pkid only when pkid is None because spec says re-transmission
+        // should be done using same pkid
+        let publish_message = if publish_message.pkid.is_some(){
+            publish_message
+        }else {
+            publish_message.set_pkid(Some(self.next_pkid()))
+        };
 
-        match publish_message.message.qos {
-            QoS::AtLeastOnce => {
-                if payload_len > self.opts.storepack_sz {
-                    warn!("Size limit exceeded. Dropping packet: {:?}", publish_message);
-                    return Err(Error::PacketSizeLimitExceeded)
-                } else {
-                    self.outgoing_pub.push_back(publish_message.clone());
-                }
+        let payload_len = publish_message.payload.len();
 
-                if self.outgoing_pub.len() > 50 * 50 {
-                    warn!(":( :( Outgoing publish queue length growing bad --> {:?}", self.outgoing_pub.len());
-                }
-            }
-            _ => panic!("Invalid QoS"),
+        if payload_len > self.opts.storepack_sz {
+            warn!("Size limit exceeded. Dropping packet: {:?}", publish_message);
+            return Err(Error::PacketSizeLimitExceeded)
+        } else {
+            self.outgoing_pub.push_back(publish_message.clone());
+        }
+        
+        if self.outgoing_pub.len() > 50 * 50 {
+            warn!(":( :( Outgoing publish queue length growing bad --> {:?}", self.outgoing_pub.len());
         }
 
-        let packet = Packet::Publish(publish_message.message.to_pub(None, false));
+        let packet = Packet::Publish(publish_message.to_mqtt_message().to_pub(None, false));
 
         if self.state == MqttState::Connected {
             self.write_packet(packet)?;
@@ -317,7 +318,7 @@ impl Publisher {
 
         let m = match self.outgoing_pub
                           .iter()
-                          .position(|x| x.message.pid == Some(pkid)) {
+                          .position(|x| x.pkid == Some(pkid)) {
             Some(i) => {
                 if let Some(m) = self.outgoing_pub.remove(i) {
                     Some(*m)

@@ -4,27 +4,35 @@ use mqtt3;
 
 #[derive(Debug, Clone)]
 pub struct Message {
-    pub message: mqtt3::Message,
+    pub topic: String,
+    pub payload: Arc<Vec<u8>>,
+    pub pkid: Option<mqtt3::PacketIdentifier>,
     pub userdata: Option<Arc<Vec<u8>>>,
 }
 
 impl Message {
-    pub fn from_pub(publish: Box<mqtt3::Publish>) -> Result<Box<Message>> {
-        let m = mqtt3::Message::from_pub(publish)?;
-        let message = Message {
-            message: *m,
-            userdata: None,
-        };
-        Ok(Box::new(message))
+    // pub fn from_pub(publish: Box<mqtt3::Publish>) -> Result<Box<Message>> {
+    //     let m = mqtt3::Message::from_pub(publish)?;
+    //     let message = Message {
+    //         message: *m,
+    //         userdata: None,
+    //     };
+    //     Ok(Box::new(message))
+    // }
+
+    pub fn set_pkid(mut self, pkid: Option<mqtt3::PacketIdentifier>) -> Box<Message> {
+        self.pkid = pkid;
+        Box::new(self)
     }
 
-    pub fn transform(&self, pid: Option<mqtt3::PacketIdentifier>, qos: Option<mqtt3::QoS>) -> Box<Message> {
-        Box::new(
-            Message {
-                message: *self.message.transform(pid, qos),
-                userdata: None,
-            }
-        )
+    pub fn to_mqtt_message(&self) -> Box<mqtt3::Message> {
+        Box::new(mqtt3::Message {
+            topic: mqtt3::TopicPath::from_str(self.topic.to_string()).expect("Invalid Topic"),
+            retain: false,
+            qos: mqtt3::QoS::AtLeastOnce,
+            payload: self.payload.clone(),
+            pid: self.pkid,
+        })
     }
 }
 
