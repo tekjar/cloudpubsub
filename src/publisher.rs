@@ -193,7 +193,7 @@ impl Publisher {
         }
 
         let mut stream = NetworkStream::connect(&self.opts.addr, self.opts.ca.clone(), self.opts.client_certs.clone())?;
-        stream.set_read_timeout(Some(Duration::new(3, 0)))?;
+        stream.set_read_timeout(Some(Duration::new(60, 0)))?;
         stream.set_write_timeout(Some(Duration::new(60, 0)))?;
 
         self.stream = stream;

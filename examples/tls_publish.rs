@@ -1,19 +1,23 @@
 extern crate cloudpubsub;
 extern crate pretty_env_logger;
+extern crate rand;
+
 use std::thread;
 use std::time::Duration;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+use rand::{thread_rng, Rng};
+
 use cloudpubsub::{MqttOptions, MqttClient, MqttCallback};
 
 fn main() {
     pretty_env_logger::init().unwrap();
 
     let options = MqttOptions::new().set_client_id("tls-publisher-1")
-                                    .set_ca("/userdata/certs/ca-chain.cert.pem")
-                                    .set_client_certs("/userdata/certs/RAVI-LOCAL.cert.pem", "/userdata/certs/RAVI-LOCAL.key.pem")
-                                    //.set_broker("localhost:8883");
-                                    .set_broker("prod-mqtt-broker.atherengineering.in:5000");
+                                    .set_ca("/userdata/certs/dev/ca-chain.cert.pem")
+                                    .set_client_certs("/userdata/certs/dev/RAVI-LOCAL-DEV.cert.pem", "/userdata/certs/dev/RAVI-LOCAL-DEV.key.pem")
+                                    .set_broker("dev-mqtt-broker.atherengineering.in:5000");
 
     let count = Arc::new(AtomicUsize::new(0));
     let callback_count = count.clone();
@@ -46,6 +50,6 @@ fn main() {
         client.publish("hello/world", v);
     }
 
-    thread::sleep(Duration::from_secs(31));
+    thread::sleep(Duration::from_secs(60));
     println!("Total Ack Count = {:?}", count);
 }
