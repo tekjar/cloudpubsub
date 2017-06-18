@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use error::Result;
 use mqtt3;
 
 #[derive(Debug, Clone)]

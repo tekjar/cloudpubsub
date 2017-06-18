@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::thread;
 use std::io::{Write, ErrorKind};
 
-use mqtt3::{self, MqttWrite, MqttRead, QoS, PacketIdentifier, Packet, Connect, Connack, Protocol, ConnectReturnCode};
+use mqtt3::{self, MqttWrite, MqttRead, PacketIdentifier, Packet, Connect, Connack, Protocol, ConnectReturnCode};
 use threadpool::ThreadPool;
 
 use error::{Result, Error};
