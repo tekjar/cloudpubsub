@@ -106,7 +106,11 @@ impl Publisher {
                             // (or) network.
                             if let Err(e) = self.publish(m) {
                                 error!("Publish error. Error = {:?}", e);
-                                continue 'publisher;
+                                if let Error::Io(_) = e {
+                                    break 'publisher;
+                                } else {
+                                    continue 'publisher;
+                                }
                             }
 
                             // you'll know of disconnections immediately here even when writes
@@ -269,6 +273,7 @@ impl Publisher {
             self.initial_connect = false;
         }
 
+        info!("Mqtt connection successful !!");
         self.state = MqttState::Connected;
 
         // Retransmit QoS1,2 queues after reconnection when clean_session = false
