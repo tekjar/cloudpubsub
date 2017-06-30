@@ -3,12 +3,14 @@ use std::time::{Duration, Instant};
 use std::net::Shutdown;
 use std::collections::VecDeque;
 use std::thread;
-use std::io::{Write, ErrorKind};
+use std::io::{self, Write, ErrorKind};
+use std::result::Result as StdResult;
+use std::error::Error as StdError;
 
 use mqtt3::{self, MqttWrite, MqttRead, PacketIdentifier, Packet, Connect, Connack, Protocol, ConnectReturnCode};
 use threadpool::ThreadPool;
 
-use error::{Result, Error};
+use error::{Result, PublishError, PingError, IncomingError, AwaitError, Error};
 use stream::NetworkStream;
 use clientoptions::MqttOptions;
 use callback::{Message, MqttCallback};
@@ -64,101 +66,89 @@ impl Publisher {
         // ensures that user doesn't have access to this object
         // before mqtt connection
         publisher.try_reconnect()?;
-        publisher.await()?;
+        publisher.await().unwrap();
         Ok(publisher)
     }
 
     pub fn run(&mut self) -> Result<()> {
         let timeout = Duration::new(self.opts.keep_alive.unwrap() as u64, 0);
-        // @ Only read from `Network Request` channel when connected. Or else Empty
-        // return.
-        // @ Helps in case where Tcp connection happened but in MqttState::Handshake
-        // state.
-        if self.state == MqttState::Connected {
-            loop {
-                'publisher: loop {
-                    let pr = match self.nw_request_rx.recv_timeout(timeout) {
-                        Ok(v) => v,
-                        Err(RecvTimeoutError::Timeout) => {
-                            let _ = self.ping();
-                            if let Err(e) = self.await() {
-                                match e {
-                                    Error::PingTimeout | Error::Reconnect => break 'publisher,
-                                    Error::MqttConnectionRefused(_) => break 'publisher,
-                                    _ => continue 'publisher,
-                                }
-                            }
-                            continue 'publisher
-                        }
-                        Err(e) => {
-                            error!("Publisher recv error. Error = {:?}", e);
-                            return Err(e.into());
-                        }
-                    };
 
-                    match pr {
-                        PublishRequest::Shutdown => self.stream.shutdown(Shutdown::Both)?,
-                        PublishRequest::Disconnect => self.disconnect()?,
-                        PublishRequest::Publish(m) => {
-                            // Ignore publish error, If the errors are because of n/w disonnections,
-                            // they'll be detected during 'await'
-                            // TODO: Handle 'write_all' timeout errors araised due to slow consumer
-                            // (or) network.
-                            if let Err(e) = self.publish(m) {
-                                error!("Publish error. Error = {:?}", e);
-                                if let Error::Io(_) = e {
-                                    break 'publisher;
-                                } else {
-                                    continue 'publisher;
-                                }
+        loop {
+            'publisher: loop {
+                let pr = match self.nw_request_rx.recv_timeout(timeout) {
+                    Ok(v) => v,
+                    Err(RecvTimeoutError::Timeout) => {
+                        if let Err(e) = self.ping() {
+                            error!("Ping error. Error = {:?}", e);
+                            break 'publisher
+                        }
+                        if let Err(e) = self.await() {
+                            match e {
+                                AwaitError::Reconnect => break 'publisher,
+                                AwaitError::Io(_) => break 'publisher,
                             }
+                        }
+                        continue 'publisher
+                    }
+                    Err(e) => {
+                        error!("Publisher recv error. Error = {:?}", e);
+                        return Err(e.into());
+                    }
+                };
 
-                            // you'll know of disconnections immediately here even when writes
-                            // doesn't error out immediately after disonnection
-                            if let Err(e) = self.await() {
-                                match e {
-                                    Error::PingTimeout | Error::Reconnect => break 'publisher,
-                                    Error::MqttConnectionRefused(_) => break 'publisher,
-                                    _ => continue 'publisher,
-                                }
+                match pr {
+                    PublishRequest::Shutdown => self.stream.shutdown(Shutdown::Both)?,
+                    PublishRequest::Disconnect => self.disconnect()?,
+                    PublishRequest::Publish(m) => {
+                        if let Err(e) = self.publish(m) {
+                            error!("Publish error. Error = {:?}", e);
+                            match e {
+                                PublishError::Io(_) => break 'publisher,
+                                PublishError::PacketSizeLimitExceeded => continue 'publisher,
+                                PublishError::InvalidState => break 'publisher,
                             }
                         }
-                    };
-                }
-
-                'reconnect: loop {
-                    match self.try_reconnect() {
-                        Ok(_) => {
-                            if let Err(e) = self.await() {
-                                match e {
-                                    Error::PingTimeout | Error::Reconnect => continue 'reconnect,
-                                    Error::MqttConnectionRefused(_) => continue 'reconnect,
-                                    _ => continue 'reconnect,
-                                }
-                            } else {
-                                break 'reconnect
+                        // you'll know of disconnections immediately here even when writes
+                        // doesn't error out immediately after disonnection
+                        if let Err(e) = self.await() {
+                            match e {
+                                AwaitError::Reconnect => break 'publisher,
+                                AwaitError::Io(_) => break 'publisher,
                             }
                         }
-                        Err(e) => {
-                            error!("Try Reconnect Failed. Error = {:?}", e);
-                            continue 'reconnect;
+                    }
+                };
+            }
+            'reconnect: loop {
+                match self.try_reconnect() {
+                    Ok(_) => {
+                        if let Err(e) = self.await() {
+                            match e {
+                                AwaitError::Reconnect => continue 'reconnect,
+                                AwaitError::Io(_) => continue 'reconnect,
+                            }
+                        } else {
+                            break 'reconnect
                         }
+                    }
+                    Err(e) => {
+                        error!("Try Reconnect Failed. Error = {:?}", e);
+                        continue 'reconnect;
                     }
                 }
             }
         }
-
-        error!("Stopping publisher run loop");
-        Ok(())
     }
 
     // Awaits for an incoming packet and handles internal states appropriately
-    pub fn await(&mut self) -> Result<()> {
+    pub fn await(&mut self) -> StdResult<(), AwaitError> {
         let packet = self.stream.read_packet();
 
         if let Ok(packet) = packet {
-            if let Err(Error::MqttConnectionRefused(e)) = self.handle_packet(packet) {
-                Err(Error::MqttConnectionRefused(e))
+            if let Err(e) = self.handle_packet(packet) {
+                error!("Handle packet error = {:?}.", e);
+                self.unbind();
+                Err(AwaitError::Reconnect)
             } else {
                 Ok(())
             }
@@ -167,7 +157,7 @@ impl Publisher {
                 ErrorKind::TimedOut | ErrorKind::WouldBlock => {
                     error!("Timeout waiting for ack. Error = {:?}", e);
                     self.unbind();
-                    Err(Error::Reconnect)
+                    Err(AwaitError::Io(e))
                 }
                 _ => {
                     // Socket error are readily available here as soon as
@@ -178,13 +168,13 @@ impl Publisher {
                     // the eventloop thread. Setting disconnect_block = true during write failure
                     error!("* Error receiving packet. Error = {:?}", e);
                     self.unbind();
-                    Err(Error::Reconnect)
+                    Err(AwaitError::Io(e))
                 }
             }
         } else {
             error!("** Error receiving packet. Error = {:?}", packet);
             self.unbind();
-            Err(Error::Reconnect)
+            Err(AwaitError::Reconnect)
         }
     }
 
@@ -228,14 +218,14 @@ impl Publisher {
         )
     }
 
-    fn handle_packet(&mut self, packet: Packet) -> Result<()> {
+    fn handle_packet(&mut self, packet: Packet) -> StdResult<(), IncomingError> {
         match self.state {
             MqttState::Handshake => {
                 if let Packet::Connack(connack) = packet {
                     self.handle_connack(connack)
                 } else {
                     error!("Invalid Packet in Handshake State --> {:?}", packet);
-                    Err(Error::ConnectionAbort)
+                    Err(IncomingError::ConnectionAbort)
                 }
             }
             MqttState::Connected => {
@@ -248,25 +238,25 @@ impl Publisher {
                     Packet::Puback(puback) => self.handle_puback(puback),
                     _ => {
                         error!("Invalid Packet in Connected State --> {:?}", packet);
-                        Ok(())
+                        Err(IncomingError::ConnectionAbort)
                     }
                 }
             }
             MqttState::Disconnected => {
                 error!("Invalid Packet in Disconnected State --> {:?}", packet);
-                Err(Error::ConnectionAbort)
+                Err(IncomingError::ConnectionAbort)
             }
         }
     }
 
     ///  Checks Mqtt connack packet's status code and sets Mqtt state
     /// to `Connected` if successful
-    fn handle_connack(&mut self, connack: Connack) -> Result<()> {
+    fn handle_connack(&mut self, connack: Connack) -> StdResult<(), IncomingError> {
         let code = connack.code;
 
         if code != ConnectReturnCode::Accepted {
             error!("Failed to connect. Error = {:?}", code);
-            return Err(Error::MqttConnectionRefused(code));
+            return Err(IncomingError::MqttConnectionRefused(code));
         }
 
         if self.initial_connect {
@@ -278,13 +268,17 @@ impl Publisher {
 
         // Retransmit QoS1,2 queues after reconnection when clean_session = false
         if !self.opts.clean_session {
-            self.force_retransmit()?;
+            if self.force_retransmit().is_err() {
+                return Err(IncomingError::ConnectionAbort)
+            }
         }
 
         Ok(())
     }
 
-    fn publish(&mut self, publish_message: Box<Message>) -> Result<()> {
+    // NOTE: Using different error type instead of bigger general error so that the caller
+    //       can use the typesystem to cover all possible error cases
+    fn publish(&mut self, publish_message: Box<Message>) -> StdResult<(), PublishError> {
         // Assign next pkid only when pkid is None because spec says re-transmission
         // should be done using same pkid
         let publish_message = if publish_message.pkid.is_some(){
@@ -297,7 +291,7 @@ impl Publisher {
 
         if payload_len > self.opts.storepack_sz {
             warn!("Size limit exceeded. Dropping packet: {:?}", publish_message);
-            return Err(Error::PacketSizeLimitExceeded)
+            return Err(PublishError::PacketSizeLimitExceeded)
         } else {
             self.outgoing_pub.push_back(publish_message.clone());
         }
@@ -311,13 +305,14 @@ impl Publisher {
         if self.state == MqttState::Connected {
             self.write_packet(packet)?;
         } else {
-            warn!("State = {:?}. Skipping network write", self.state);
+            error!("State = {:?}. Should'nt publish in this state", self.state);
+            return Err(PublishError::InvalidState)
         }
 
         Ok(())
     }
 
-    fn handle_puback(&mut self, pkid: PacketIdentifier) -> Result<()> {
+    fn handle_puback(&mut self, pkid: PacketIdentifier) -> StdResult<(), IncomingError> {
         // debug!("*** PubAck --> Pkid({:?})\n--- Publish Queue =\n{:#?}\n\n", pkid, self.outgoing_pub);
         debug!("Received puback for: {:?}", pkid);
 
@@ -356,41 +351,36 @@ impl Publisher {
         Ok(())
     }
 
-    fn ping(&mut self) -> Result<()> {
+    fn ping(&mut self) -> StdResult<(), PingError> {
         // debug!("client state --> {:?}, await_ping --> {}", self.state,
         // self.await_ping);
 
-        match self.state {
-            MqttState::Connected => {
-                if let Some(keep_alive) = self.opts.keep_alive {
-                    let elapsed = self.last_flush.elapsed();
-
-                    if elapsed >= Duration::from_millis(((keep_alive * 1000) as f64 * 0.9) as u64) {
-                        if elapsed >= Duration::new((keep_alive + 1) as u64, 0) {
-                            return Err(Error::PingTimeout);
-                        }
-
-                        // @ Prevents half open connections. Tcp writes will buffer up
-                        // with out throwing any error (till a timeout) when internet
-                        // is down. Eventhough broker closes the socket, EOF will be
-                        // known only after reconnection.
-                        // We just unbind the socket if there in no pingresp before next ping
-                        // (What about case when pings aren't sent because of constant publishes
-                        // ?. A. Tcp write buffer gets filled up and write will be blocked for 10
-                        // secs and then error out because of timeout.)
-                        if self.await_pingresp {
-                            return Err(Error::AwaitPingResp);
-                        }
-
-                        let ping = Packet::Pingreq;
-                        self.await_pingresp = true;
-                        self.write_packet(ping)?;
-                    }
+        if let Some(keep_alive) = self.opts.keep_alive {
+            let elapsed = self.last_flush.elapsed();
+            if elapsed >= Duration::from_millis(((keep_alive * 1000) as f64 * 0.9) as u64) {
+                if elapsed >= Duration::new((keep_alive + 1) as u64, 0) {
+                    return Err(PingError::PingTimeout);
                 }
-            }
+                // @ Prevents half open connections. Tcp writes will buffer up
+                // with out throwing any error (till a timeout) when internet
+                // is down. Eventhough broker closes the socket, EOF will be
+                // known only after reconnection.
+                // We just unbind the socket if there in no pingresp before next ping
+                // (What about case when pings aren't sent because of constant publishes
+                // ?. A. Tcp write buffer gets filled up and write will be blocked for 10
+                // secs and then error out because of timeout.)
+                if self.await_pingresp {
+                    return Err(PingError::AwaitPingResp);
+                }
 
-            MqttState::Disconnected | MqttState::Handshake => {
-                error!("I won't ping. Client is in disconnected/handshake state")
+                let ping = Packet::Pingreq;
+                self.await_pingresp = true;
+                if self.state == MqttState::Connected {
+                    self.write_packet(ping)?;
+                } else {
+                    error!("State = {:?}. Shouldn't ping in this state", self.state);
+                    return Err(PingError::InvalidState)
+                }
             }
         }
         Ok(())
@@ -398,7 +388,7 @@ impl Publisher {
 
     // Spec says that client (for QoS > 0, persistant session [clean session = 0])
     // should retransmit all the unacked publishes and pubrels after reconnection.
-    fn force_retransmit(&mut self) -> Result<()> {
+    fn force_retransmit(&mut self) -> StdResult<(), AwaitError> {
         // Cloning because iterating and removing isn't possible.
         // Iterating over indexes and and removing elements messes
         // up the remove sequence
@@ -448,16 +438,16 @@ impl Publisher {
     // but not during mantests/ping_reqs_in_time_and_reconnections due to low
     // frequency writes. 60 seconds migth be good default for write timeout ?)
     // https://stackoverflow.com/questions/11037867/socket-send-call-getting-blocked-for-so-long
-    fn write_packet(&mut self, packet: Packet) -> Result<()> {
+    fn write_packet(&mut self, packet: Packet) -> io::Result<()> {
         if let Err(e) = self.stream.write_packet(&packet) {
             warn!("Write error = {:?}", e);
-            return Err(e.into());
+            return Err(io::Error::new(ErrorKind::Other, e.description()))
         }
         self.flush()?;
         Ok(())
     }
 
-    fn flush(&mut self) -> Result<()> {
+    fn flush(&mut self) -> io::Result<()> {
         self.stream.flush()?;
         self.last_flush = Instant::now();
         Ok(())
