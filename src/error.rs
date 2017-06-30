@@ -39,6 +39,10 @@ quick_error! {
             from()
             display("ssl error: {:?}", err)
         }
+        Handshake(err: HandShakeError) {
+            from()
+            display("handshake error: {:?}", err)
+        }
         NoConnectionThread
     }
 }
