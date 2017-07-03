@@ -17,7 +17,7 @@ fn main() {
     let options = MqttOptions::new().set_client_id("publisher-1")
                                     .set_clean_session(false)
                                     //.set_broker("dev-mqtt-broker.atherengineering.in:1883");
-                                    .set_broker("localhost:1883");
+                                    .set_broker("localhost:12345");
 
     let count = Arc::new(AtomicUsize::new(0));
     let callback_count = count.clone();

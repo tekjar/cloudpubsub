@@ -1,4 +1,4 @@
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 use std::net::Shutdown;
 use std::collections::VecDeque;
@@ -10,7 +10,7 @@ use std::error::Error as StdError;
 use mqtt3::{self, MqttWrite, MqttRead, PacketIdentifier, Packet, Connect, Connack, Protocol, ConnectReturnCode};
 use threadpool::ThreadPool;
 
-use error::{Result, PublishError, PingError, IncomingError, AwaitError, Error};
+use error::{Result, PublishError, PingError, IncomingError, AwaitError, RetransmissionError};
 use stream::NetworkStream;
 use clientoptions::MqttOptions;
 use callback::{Message, MqttCallback};
@@ -68,6 +68,28 @@ impl Publisher {
         publisher.try_reconnect()?;
         publisher.await().unwrap();
         Ok(publisher)
+    }
+
+    pub fn mock_connect(opts: MqttOptions) -> Self {
+        let (_tx, rx) = sync_channel::<PublishRequest>(1);
+
+        Publisher {
+            opts: opts,
+            stream: NetworkStream::None,
+            nw_request_rx: rx,
+            state: MqttState::Disconnected,
+            initial_connect: true,
+            await_pingresp: false,
+            last_flush: Instant::now(),
+            last_pkid: PacketIdentifier(0),
+
+            outgoing_pub: VecDeque::new(),
+
+            callback: None,
+            no_of_reconnections: 0,
+
+            pool: ThreadPool::new(1),
+        }
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -388,7 +410,7 @@ impl Publisher {
 
     // Spec says that client (for QoS > 0, persistant session [clean session = 0])
     // should retransmit all the unacked publishes and pubrels after reconnection.
-    fn force_retransmit(&mut self) -> StdResult<(), AwaitError> {
+    fn force_retransmit(&mut self) -> StdResult<(), RetransmissionError> {
         // Cloning because iterating and removing isn't possible.
         // Iterating over indexes and and removing elements messes
         // up the remove sequence
@@ -401,6 +423,8 @@ impl Publisher {
                 error!("Publish error during retransmission. Skipping. Error = {:?}", e);
                 continue
             }
+
+            // TODO: Await errors might result in clean queue.
             self.await()?
         }
 
@@ -452,4 +476,202 @@ impl Publisher {
         self.last_flush = Instant::now();
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod test {
+    use std::sync::Arc;
+
+    use publisher::Publisher;
+    use mqtt3::{PacketIdentifier, Connack, Packet, ConnectReturnCode};
+    use clientoptions::MqttOptions;
+    use callback::Message;
+    use error::{PublishError, IncomingError};
+    use MqttState;
+
+    #[test]
+    fn next_pkid_roll() {
+        let opts = MqttOptions::new();
+        let mut connection = Publisher::mock_connect(opts);
+        let mut pkt_id = PacketIdentifier(0);
+        for _ in 0..65536 {
+            pkt_id = connection.next_pkid();
+        }
+        assert_eq!(PacketIdentifier(1), pkt_id);
+     }
+
+     #[test]
+     fn unbind_behaviour_during_clean_and_persistent_sessions() {
+        // persistent session
+        let opts = MqttOptions::new();
+        let mut connection = Publisher::mock_connect(opts);
+        connection.state = MqttState::Connected;
+        connection.await_pingresp = true;
+
+        let publish = Message {
+            topic: "a/b".to_string(),
+            payload: Arc::new(vec![1, 2, 3]),
+            pkid: None,
+            userdata: None,
+        };
+        let publish = Box::new(publish);
+
+        connection.outgoing_pub.push_back(publish.clone());
+        connection.outgoing_pub.push_back(publish.clone());
+
+        connection.unbind();
+        assert_eq!(connection.outgoing_pub.len(), 2);
+        assert_eq!(connection.state, MqttState::Disconnected);
+        assert_eq!(connection.await_pingresp, false);
+
+        // clean session
+        let opts = MqttOptions::new().set_clean_session(true);
+        let mut connection = Publisher::mock_connect(opts);
+        connection.state = MqttState::Connected;
+        connection.await_pingresp = true;
+
+        let publish = Message {
+            topic: "a/b".to_string(),
+            payload: Arc::new(vec![1, 2, 3]),
+            pkid: None,
+            userdata: None,
+        };
+        let publish = Box::new(publish);
+
+        connection.outgoing_pub.push_back(publish.clone());
+        connection.outgoing_pub.push_back(publish.clone());
+
+        connection.unbind();
+        assert_eq!(connection.outgoing_pub.len(), 0);
+        assert_eq!(connection.state, MqttState::Disconnected);
+        assert_eq!(connection.await_pingresp, false);
+     }
+
+     /// makes sure that all the messages cleared from the queue during retransmission
+     /// are put in the queue agian. even during publish errors
+     #[test]
+     fn force_retransmission_should_put_everything_back_to_queue_during_errors() {
+        // persistent session
+        let opts = MqttOptions::new();
+        let mut connection = Publisher::mock_connect(opts);
+        connection.state = MqttState::Connected;
+        connection.await_pingresp = true;
+
+        let publish = Message {
+            topic: "a/b".to_string(),
+            payload: Arc::new(vec![1, 2, 3]),
+            pkid: None,
+            userdata: None,
+        };
+        let publish = Box::new(publish);
+
+        connection.outgoing_pub.push_back(publish.clone());
+        connection.outgoing_pub.push_back(publish.clone());
+
+        let _ = connection.force_retransmit();
+        assert_eq!(connection.outgoing_pub.len(), 2);
+     }
+
+     #[test]
+     fn publish_should_return_error_when_payload_size_exceeds_threshold() {
+         // persistent session
+        let opts = MqttOptions::new();
+        let mut connection = Publisher::mock_connect(opts);
+        connection.state = MqttState::Connected;
+        connection.await_pingresp = true;
+
+        let publish = Message {
+            topic: "a/b".to_string(),
+            payload: Arc::new(vec![0; 101 * 1024]),
+            pkid: None,
+            userdata: None,
+        };
+        let publish = Box::new(publish);
+
+        if let Err(PublishError::PacketSizeLimitExceeded) = connection.publish(publish) {
+            ()
+        } else {
+            panic!("Should return PacketSizeLimitExceeded error");
+        }
+     }
+
+     #[test]
+     fn publish_should_return_error_while_publishing_in_non_connected_state() {
+        // persistent session
+        let opts = MqttOptions::new();
+        let mut connection = Publisher::mock_connect(opts);
+        connection.state = MqttState::Handshake;
+        connection.await_pingresp = true;
+
+        let publish = Message {
+            topic: "a/b".to_string(),
+            payload: Arc::new(vec![1, 2, 3]),
+            pkid: None,
+            userdata: None,
+        };
+        let publish = Box::new(publish);
+
+        if let Err(PublishError::InvalidState) = connection.publish(publish) {
+            ()
+        } else {
+            panic!("Should return InvalidState error");
+        }
+     }
+
+     #[test]
+     fn pubacks_should_clear_queues() {
+        let opts = MqttOptions::new();
+        let mut connection = Publisher::mock_connect(opts);
+        connection.state = MqttState::Connected;
+        connection.await_pingresp = true;
+
+        let publish = Message {
+            topic: "a/b".to_string(),
+            payload: Arc::new(vec![1, 2, 3]),
+            pkid: None,
+            userdata: None,
+        };
+        let publish = Box::new(publish);
+
+        let _ = connection.publish(publish.clone());
+        let _ = connection.publish(publish.clone());
+        let _ = connection.publish(publish.clone());
+
+        for i in 0..connection.outgoing_pub.len() {
+            assert_eq!(connection.outgoing_pub[i].pkid.unwrap(), PacketIdentifier(i as u16 + 1));
+        }
+
+        for i in 0..connection.outgoing_pub.len() {
+            connection.handle_puback(PacketIdentifier(i as u16 + 1));
+        }
+
+        assert_eq!(connection.outgoing_pub.len(), 0);
+     }
+
+     #[test]
+     fn connection_should_error_for_errored_connack() {
+        let opts = MqttOptions::new();
+        let mut connection = Publisher::mock_connect(opts);
+        connection.state = MqttState::Disconnected;
+
+        let connack = Connack{session_present: false, code: ConnectReturnCode::BadUsernamePassword};
+        if let Err(IncomingError::MqttConnectionRefused(e)) = connection.handle_connack(connack) {
+            assert_eq!(e, ConnectReturnCode::BadUsernamePassword);
+        } else {
+            panic!("Should error with 'BadUsernamePassword'");
+        }
+     }
+
+     #[test]
+     fn connack_should_set_correct_state() {
+        let opts = MqttOptions::new();
+        let mut connection = Publisher::mock_connect(opts);
+        connection.state = MqttState::Disconnected;
+
+        let connack = Connack{session_present: false, code: ConnectReturnCode::Accepted};
+        connection.handle_connack(connack);
+
+        assert_eq!(MqttState::Connected, connection.state);
+        assert_eq!(false, connection.initial_connect);
+     }
 }

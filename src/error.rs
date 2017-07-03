@@ -106,3 +106,16 @@ quick_error! {
         Reconnect
     }
 }
+
+
+quick_error! {
+    #[derive(Debug)]
+    pub enum RetransmissionError {
+        Publish(err: PublishError){
+            from()
+        }
+        Await(err: AwaitError) {
+            from()
+        }
+    }
+}

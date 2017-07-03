@@ -138,7 +138,7 @@ impl MqttOptions {
     /// chaining
     ///
     /// ```
-    /// use rumqtt::MqttOptions;
+    /// use cloudpubsub::MqttOptions;
     /// let client = MqttOptions::new()
     ///                           .set_keep_alive(5)
     ///                           .set_reconnect(5)
