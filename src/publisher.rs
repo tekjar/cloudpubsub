@@ -66,6 +66,9 @@ impl Publisher {
         // ensures that user doesn't have access to this object
         // before mqtt connection
         publisher.try_reconnect()?;
+
+        // TODO: Return await()ed packet type and raise error in
+        // packet type is different then expected
         publisher.await().unwrap();
         Ok(publisher)
     }
