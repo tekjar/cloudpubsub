@@ -43,14 +43,79 @@ quick_error! {
             from()
             display("handshake error: {:?}", err)
         }
+        NoConnectionThread
+    }
+}
+
+quick_error! {
+    #[derive(Debug)]
+    pub enum PublishError {
+        Io(err: io::Error) {
+            from()
+            description("io error")
+            display("I/O error: {}", err)
+            cause(err)
+        }
+        PacketSizeLimitExceeded
+        InvalidState
+    }
+}
+
+quick_error! {
+    #[derive(Debug)]
+    pub enum PingError {
+        Io(err: io::Error) {
+            from()
+            description("io error")
+            display("I/O error: {}", err)
+            cause(err)
+        }
+        AwaitPingResp
+        InvalidState
+        PingTimeout
+    }
+}
+
+quick_error! {
+    #[derive(Debug)]
+    pub enum IncomingError {
+        Io(err: io::Error) {
+            from()
+            description("io error")
+            display("I/O error: {}", err)
+            cause(err)
+        }
+        // might happen when broker refuses the connection
+        // due to username/password mismatches after tcp connection
         MqttConnectionRefused(e: ConnectReturnCode) {
             from()
         }
-        PacketSizeLimitExceeded
-        NoConnectionThread
-        Reconnect
-        PingTimeout
-        AwaitPingResp
         ConnectionAbort
+    }
+}
+
+quick_error! {
+    #[derive(Debug)]
+    pub enum AwaitError {
+        Io(err: io::Error) {
+            from()
+            description("io error")
+            display("I/O error: {}", err)
+            cause(err)
+        }
+        Reconnect
+    }
+}
+
+
+quick_error! {
+    #[derive(Debug)]
+    pub enum RetransmissionError {
+        Publish(err: PublishError){
+            from()
+        }
+        Await(err: AwaitError) {
+            from()
+        }
     }
 }

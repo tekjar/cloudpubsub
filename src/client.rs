@@ -51,7 +51,7 @@ impl MqttClient {
                     &TrySendError::Disconnected(_) => return Err(Error::NoConnectionThread),
                     &TrySendError::Full(_) => {
                         warn!("Request Queue Full !!!!!!!!");
-                        thread::sleep(Duration::new(2, 0));
+                        thread::sleep(Duration::new(3, 0));
                         continue;
                     }
                 }
@@ -74,7 +74,7 @@ impl MqttClient {
                     &TrySendError::Disconnected(_) => return Err(Error::NoConnectionThread),
                     &TrySendError::Full(_) => {
                         warn!("Request Queue Full !!!!!!!!");
-                        thread::sleep(Duration::new(2, 0));
+                        thread::sleep(Duration::new(3, 0));
                         continue;
                     }
                 }
@@ -82,6 +82,11 @@ impl MqttClient {
                 return ret_val;
             }
         }
+    }
+
+    pub fn disconnect(&self) -> Result<()> {
+        self.nw_request_tx.try_send(PublishRequest::Disconnect)?;
+        Ok(())
     }
 
     fn _publish(&mut self, topic: &str, payload: Arc<Vec<u8>>, userdata: Option<Arc<Vec<u8>>>) -> Result<()> {
