@@ -144,6 +144,7 @@ impl Publisher {
                     }
                 };
             }
+
             'reconnect: loop {
                 match self.try_reconnect() {
                     Ok(_) => {
@@ -329,6 +330,7 @@ impl Publisher {
 
         if self.state == MqttState::Connected {
             self.write_packet(packet)?;
+            info!("Published. Pkid = {:?}, Payload Size = {:?}", publish_message.pkid, payload_len);
         } else {
             error!("State = {:?}. Should'nt publish in this state", self.state);
             return Err(PublishError::InvalidState)
