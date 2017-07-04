@@ -7,7 +7,7 @@ use std::time::Duration;
 use openssl::ssl::{self, SslMethod, SSL_VERIFY_NONE, SSL_VERIFY_PEER};
 use openssl::x509::X509_FILETYPE_PEM;
 
-use mqtt3::{MqttWrite, MqttRead};
+use mqtt311::{MqttWrite, MqttRead};
 pub type SslStream = ssl::SslStream<TcpStream>;
 
 use error::Result;

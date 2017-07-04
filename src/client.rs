@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::thread;
 use std::sync::mpsc::{sync_channel, SyncSender};
 
-use mqtt3::TopicPath;
+use mqtt311::TopicPath;
 
 use error::{Result, Error};
 use clientoptions::MqttOptions;

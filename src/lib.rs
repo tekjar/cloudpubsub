@@ -1,5 +1,5 @@
 extern crate rand;
-extern crate mqtt3;
+extern crate mqtt311;
 #[macro_use]
 extern crate log;
 #[macro_use]

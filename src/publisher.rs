@@ -7,7 +7,7 @@ use std::io::{self, Write, ErrorKind};
 use std::result::Result as StdResult;
 use std::error::Error as StdError;
 
-use mqtt3::{self, MqttWrite, MqttRead, PacketIdentifier, Packet, Connect, Connack, Protocol, ConnectReturnCode};
+use mqtt311::{self, MqttWrite, MqttRead, PacketIdentifier, Packet, Connect, Connack, Protocol, ConnectReturnCode};
 use threadpool::ThreadPool;
 
 use error::{Result, PublishError, PingError, IncomingError, AwaitError, RetransmissionError};
@@ -199,7 +199,7 @@ impl Publisher {
             } else {
                 Ok(())
             }
-        } else if let Err(mqtt3::Error::Io(e)) = packet {
+        } else if let Err(mqtt311::Error::Io(e)) = packet {
             match e.kind() {
                 ErrorKind::TimedOut | ErrorKind::WouldBlock => {
                     error!("Timeout waiting for ack. Error = {:?}", e);
@@ -510,7 +510,7 @@ mod test {
     use std::sync::Arc;
 
     use publisher::Publisher;
-    use mqtt3::{PacketIdentifier, Connack, ConnectReturnCode};
+    use mqtt311::{PacketIdentifier, Connack, ConnectReturnCode};
     use clientoptions::MqttOptions;
     use callback::Message;
     use error::{PublishError, IncomingError};
