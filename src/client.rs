@@ -13,7 +13,7 @@ use std::time::Duration;
 use std::sync::mpsc::TrySendError;
 
 pub struct MqttClient {
-    pub nw_request_tx: SyncSender<PublishRequest>,
+    nw_request_tx: SyncSender<PublishRequest>,
 }
 
 impl MqttClient {

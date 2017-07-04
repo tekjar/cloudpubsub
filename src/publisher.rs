@@ -24,20 +24,20 @@ pub enum PublishRequest {
 }
 
 pub struct Publisher {
-    pub opts: MqttOptions,
-    pub stream: NetworkStream,
-    pub nw_request_rx: Receiver<PublishRequest>,
-    pub state: MqttState,
-    pub initial_connect: bool,
-    pub await_pingresp: bool,
-    pub last_flush: Instant,
-    pub last_pkid: PacketIdentifier,
-    pub callback: Option<MqttCallback>,
-    pub outgoing_pub: VecDeque<(Box<Message>)>,
-    pub no_of_reconnections: u32,
+    opts: MqttOptions,
+    stream: NetworkStream,
+    nw_request_rx: Receiver<PublishRequest>,
+    state: MqttState,
+    initial_connect: bool,
+    await_pingresp: bool,
+    last_flush: Instant,
+    last_pkid: PacketIdentifier,
+    callback: Option<MqttCallback>,
+    outgoing_pub: VecDeque<(Box<Message>)>,
+    no_of_reconnections: u32,
 
     // thread pool to execute puback callbacks
-    pub pool: ThreadPool,
+    pool: ThreadPool,
 }
 
 impl Publisher {
