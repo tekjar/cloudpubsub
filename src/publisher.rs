@@ -36,6 +36,7 @@ pub struct Publisher {
     outgoing_pub: VecDeque<(Box<Message>)>,
     no_of_reconnections: u32,
 
+    publish_batch_count: u32,
     // thread pool to execute puback callbacks
     pool: ThreadPool,
 }
@@ -57,7 +58,7 @@ impl Publisher {
 
             callback: callback,
             no_of_reconnections: 0,
-
+            publish_batch_count: 0,
             pool: ThreadPool::new(2),
         };
 
@@ -90,7 +91,7 @@ impl Publisher {
 
             callback: None,
             no_of_reconnections: 0,
-
+            publish_batch_count: 0,
             pool: ThreadPool::new(1),
         }
     }
@@ -167,7 +168,7 @@ impl Publisher {
     }
 
     // Awaits for an incoming packet and handles internal states appropriately
-    pub fn await(&mut self) -> StdResult<(), AwaitError> {
+    fn await(&mut self) -> StdResult<(), AwaitError> {
         let packet = self.stream.read_packet();
 
         if let Ok(packet) = packet {
@@ -372,7 +373,7 @@ impl Publisher {
         Ok(())
     }
 
-    pub fn disconnect(&mut self) -> Result<()> {
+    fn disconnect(&mut self) -> Result<()> {
         let disconnect = Packet::Disconnect;
         self.write_packet(disconnect)?;
         Ok(())
@@ -488,7 +489,7 @@ mod test {
     use std::sync::Arc;
 
     use publisher::Publisher;
-    use mqtt3::{PacketIdentifier, Connack, Packet, ConnectReturnCode};
+    use mqtt3::{PacketIdentifier, Connack, ConnectReturnCode};
     use clientoptions::MqttOptions;
     use callback::Message;
     use error::{PublishError, IncomingError};
@@ -647,7 +648,7 @@ mod test {
         }
 
         for i in 0..connection.outgoing_pub.len() {
-            connection.handle_puback(PacketIdentifier(i as u16 + 1));
+            let _ = connection.handle_puback(PacketIdentifier(i as u16 + 1));
         }
 
         assert_eq!(connection.outgoing_pub.len(), 0);
@@ -674,7 +675,7 @@ mod test {
         connection.state = MqttState::Disconnected;
 
         let connack = Connack{session_present: false, code: ConnectReturnCode::Accepted};
-        connection.handle_connack(connack);
+        let _ = connection.handle_connack(connack);
 
         assert_eq!(MqttState::Connected, connection.state);
         assert_eq!(false, connection.initial_connect);
