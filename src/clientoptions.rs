@@ -27,7 +27,7 @@ impl Default for MqttOptions {
             ca: None,
             client_certs: None,
             storepack_sz: 100 * 1024,
-            await_batch_size: 50,
+            await_batch_size: 10,
         }
     }
 }
