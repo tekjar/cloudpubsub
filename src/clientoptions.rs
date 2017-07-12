@@ -12,6 +12,7 @@ pub struct MqttOptions {
     pub ca: Option<PathBuf>,
     pub client_certs: Option<(PathBuf, PathBuf)>,
     pub storepack_sz: usize,
+    pub await_batch_size: u32,
 }
 
 impl Default for MqttOptions {
@@ -26,6 +27,7 @@ impl Default for MqttOptions {
             ca: None,
             client_certs: None,
             storepack_sz: 100 * 1024,
+            await_batch_size: 10,
         }
     }
 }

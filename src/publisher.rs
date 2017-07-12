@@ -7,7 +7,7 @@ use std::io::{self, Write, ErrorKind};
 use std::result::Result as StdResult;
 use std::error::Error as StdError;
 
-use mqtt3::{self, MqttWrite, MqttRead, PacketIdentifier, Packet, Connect, Connack, Protocol, ConnectReturnCode};
+use mqtt311::{self, MqttWrite, MqttRead, PacketIdentifier, Packet, Connect, Connack, Protocol, ConnectReturnCode};
 use threadpool::ThreadPool;
 
 use error::{Result, PublishError, PingError, IncomingError, AwaitError, RetransmissionError};
@@ -24,20 +24,21 @@ pub enum PublishRequest {
 }
 
 pub struct Publisher {
-    pub opts: MqttOptions,
-    pub stream: NetworkStream,
-    pub nw_request_rx: Receiver<PublishRequest>,
-    pub state: MqttState,
-    pub initial_connect: bool,
-    pub await_pingresp: bool,
-    pub last_flush: Instant,
-    pub last_pkid: PacketIdentifier,
-    pub callback: Option<MqttCallback>,
-    pub outgoing_pub: VecDeque<(Box<Message>)>,
-    pub no_of_reconnections: u32,
+    opts: MqttOptions,
+    stream: NetworkStream,
+    nw_request_rx: Receiver<PublishRequest>,
+    state: MqttState,
+    initial_connect: bool,
+    await_pingresp: bool,
+    last_flush: Instant,
+    last_pkid: PacketIdentifier,
+    callback: Option<MqttCallback>,
+    outgoing_pub: VecDeque<(Box<Message>)>,
+    no_of_reconnections: u32,
 
+    publish_batch_count: u32,
     // thread pool to execute puback callbacks
-    pub pool: ThreadPool,
+    pool: ThreadPool,
 }
 
 impl Publisher {
@@ -57,8 +58,8 @@ impl Publisher {
 
             callback: callback,
             no_of_reconnections: 0,
-
-            pool: ThreadPool::new(2),
+            publish_batch_count: 0,
+            pool: ThreadPool::new(1),
         };
 
         // Make initial tcp connection, send connect packet and
@@ -90,7 +91,7 @@ impl Publisher {
 
             callback: None,
             no_of_reconnections: 0,
-
+            publish_batch_count: 0,
             pool: ThreadPool::new(1),
         }
     }
@@ -103,6 +104,15 @@ impl Publisher {
                 let pr = match self.nw_request_rx.recv_timeout(timeout) {
                     Ok(v) => v,
                     Err(RecvTimeoutError::Timeout) => {
+                        // if publish requests stop before batch count is full, they
+                        // are awaited during ping
+                        if let Err(e) = self.batch_await() {
+                            match e {
+                                AwaitError::Reconnect => break 'publisher,
+                                AwaitError::Io(_) => break 'publisher,
+                            }
+                        }
+
                         if let Err(e) = self.ping() {
                             error!("Ping error. Error = {:?}", e);
                             break 'publisher
@@ -133,12 +143,15 @@ impl Publisher {
                                 PublishError::InvalidState => break 'publisher,
                             }
                         }
+
                         // you'll know of disconnections immediately here even when writes
                         // doesn't error out immediately after disonnection
-                        if let Err(e) = self.await() {
-                            match e {
-                                AwaitError::Reconnect => break 'publisher,
-                                AwaitError::Io(_) => break 'publisher,
+                        if self.publish_batch_count >= self.opts.await_batch_size {
+                            if let Err(e) = self.batch_await() {
+                                match e {
+                                    AwaitError::Reconnect => break 'publisher,
+                                    AwaitError::Io(_) => break 'publisher,
+                                }
                             }
                         }
                     }
@@ -166,23 +179,30 @@ impl Publisher {
         }
     }
 
+    fn batch_await(&mut self) -> StdResult<(), AwaitError> {
+        for _ in 0..self.publish_batch_count {
+            self.await()?
+        };
+
+        self.publish_batch_count = 0;
+        Ok(())
+    }
+
     // Awaits for an incoming packet and handles internal states appropriately
-    pub fn await(&mut self) -> StdResult<(), AwaitError> {
+    fn await(&mut self) -> StdResult<(), AwaitError> {
         let packet = self.stream.read_packet();
 
         if let Ok(packet) = packet {
             if let Err(e) = self.handle_packet(packet) {
                 error!("Handle packet error = {:?}.", e);
-                self.unbind();
                 Err(AwaitError::Reconnect)
             } else {
                 Ok(())
             }
-        } else if let Err(mqtt3::Error::Io(e)) = packet {
+        } else if let Err(mqtt311::Error::Io(e)) = packet {
             match e.kind() {
                 ErrorKind::TimedOut | ErrorKind::WouldBlock => {
                     error!("Timeout waiting for ack. Error = {:?}", e);
-                    self.unbind();
                     Err(AwaitError::Io(e))
                 }
                 _ => {
@@ -193,13 +213,11 @@ impl Publisher {
                     // UPDATE: Lot of publishes are being written by the time this notified
                     // the eventloop thread. Setting disconnect_block = true during write failure
                     error!("* Error receiving packet. Error = {:?}", e);
-                    self.unbind();
                     Err(AwaitError::Io(e))
                 }
             }
         } else {
             error!("** Error receiving packet. Error = {:?}", packet);
-            self.unbind();
             Err(AwaitError::Reconnect)
         }
     }
@@ -207,6 +225,8 @@ impl Publisher {
     /// Creates a Tcp Connection, Sends Mqtt connect packet and sets state to
     /// Handshake mode if Tcp write and Mqtt connect succeeds
     fn try_reconnect(&mut self) -> Result<()> {
+        self.unbind();
+
         if !self.initial_connect {
             error!("  Will try Reconnect in 5 seconds");
             thread::sleep(Duration::new(5, 0));
@@ -275,7 +295,7 @@ impl Publisher {
         }
     }
 
-    ///  Checks Mqtt connack packet's status code and sets Mqtt state
+    /// Checks Mqtt connack packet's status code and sets Mqtt state
     /// to `Connected` if successful
     fn handle_connack(&mut self, connack: Connack) -> StdResult<(), IncomingError> {
         let code = connack.code;
@@ -331,6 +351,7 @@ impl Publisher {
         if self.state == MqttState::Connected {
             self.write_packet(packet)?;
             info!("Published. Pkid = {:?}, Payload Size = {:?}", publish_message.pkid, payload_len);
+            self.publish_batch_count += 1;
         } else {
             error!("State = {:?}. Should'nt publish in this state", self.state);
             return Err(PublishError::InvalidState)
@@ -372,7 +393,7 @@ impl Publisher {
         Ok(())
     }
 
-    pub fn disconnect(&mut self) -> Result<()> {
+    fn disconnect(&mut self) -> Result<()> {
         let disconnect = Packet::Disconnect;
         self.write_packet(disconnect)?;
         Ok(())
@@ -430,7 +451,9 @@ impl Publisher {
             }
 
             // TODO: Await errors might result in clean queue.
-            self.await()?
+            if self.publish_batch_count >= self.opts.await_batch_size {
+                self.batch_await()?;
+            }
         }
 
         Ok(())
@@ -440,13 +463,12 @@ impl Publisher {
         let _ = self.stream.shutdown(Shutdown::Both);
         self.await_pingresp = false;
         self.state = MqttState::Disconnected;
+        self.publish_batch_count = 0;
 
         // remove all the state
         if self.opts.clean_session {
             self.outgoing_pub.clear();
         }
-
-        error!("  Disconnected {:?}", self.opts.client_id);
     }
 
     // http://stackoverflow.com/questions/11115364/mqtt-messageid-practical-implementation
@@ -469,7 +491,7 @@ impl Publisher {
     // https://stackoverflow.com/questions/11037867/socket-send-call-getting-blocked-for-so-long
     fn write_packet(&mut self, packet: Packet) -> io::Result<()> {
         if let Err(e) = self.stream.write_packet(&packet) {
-            warn!("Write error = {:?}", e);
+            error!("Write error = {:?}", e);
             return Err(io::Error::new(ErrorKind::Other, e.description()))
         }
         self.flush()?;
@@ -488,7 +510,7 @@ mod test {
     use std::sync::Arc;
 
     use publisher::Publisher;
-    use mqtt3::{PacketIdentifier, Connack, Packet, ConnectReturnCode};
+    use mqtt311::{PacketIdentifier, Connack, ConnectReturnCode};
     use clientoptions::MqttOptions;
     use callback::Message;
     use error::{PublishError, IncomingError};
@@ -512,6 +534,7 @@ mod test {
         let mut connection = Publisher::mock_connect(opts);
         connection.state = MqttState::Connected;
         connection.await_pingresp = true;
+        connection.publish_batch_count = 100;
 
         let publish = Message {
             topic: "a/b".to_string(),
@@ -550,6 +573,7 @@ mod test {
         assert_eq!(connection.outgoing_pub.len(), 0);
         assert_eq!(connection.state, MqttState::Disconnected);
         assert_eq!(connection.await_pingresp, false);
+        assert_eq!(connection.publish_batch_count, 0);
      }
 
      /// makes sure that all the messages cleared from the queue during retransmission
@@ -647,7 +671,7 @@ mod test {
         }
 
         for i in 0..connection.outgoing_pub.len() {
-            connection.handle_puback(PacketIdentifier(i as u16 + 1));
+            let _ = connection.handle_puback(PacketIdentifier(i as u16 + 1));
         }
 
         assert_eq!(connection.outgoing_pub.len(), 0);
@@ -674,7 +698,7 @@ mod test {
         connection.state = MqttState::Disconnected;
 
         let connack = Connack{session_present: false, code: ConnectReturnCode::Accepted};
-        connection.handle_connack(connack);
+        let _ = connection.handle_connack(connack);
 
         assert_eq!(MqttState::Connected, connection.state);
         assert_eq!(false, connection.initial_connect);

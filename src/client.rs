@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::thread;
 use std::sync::mpsc::{sync_channel, SyncSender};
 
-use mqtt3::TopicPath;
+use mqtt311::TopicPath;
 
 use error::{Result, Error};
 use clientoptions::MqttOptions;
@@ -13,7 +13,7 @@ use std::time::Duration;
 use std::sync::mpsc::TrySendError;
 
 pub struct MqttClient {
-    pub nw_request_tx: SyncSender<PublishRequest>,
+    nw_request_tx: SyncSender<PublishRequest>,
 }
 
 impl MqttClient {

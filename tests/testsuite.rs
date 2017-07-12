@@ -20,7 +20,7 @@ fn acked_message() {
     let client_options = MqttOptions::new()
         .set_reconnect(5)
         .set_client_id("test-reconnect-client")
-        .set_broker(MOSQUITTO_LOCAL);
+        .set_broker(BROKER_ADDRESS);
 
     let cb = |m: Message| {
         let ref payload = *m.payload;
@@ -44,7 +44,7 @@ fn acked_message() {
 
 #[test]
 fn simple_stress_publish() {
-    pretty_env_logger::init().unwrap();
+    // pretty_env_logger::init().unwrap();
     let client_options = MqttOptions::new()
         .set_reconnect(3)
         .set_client_id("qos1-stress-publish")
@@ -57,8 +57,8 @@ fn simple_stress_publish() {
     let final_count = count.clone();
     let count = count.clone();
 
-    let cb = move |m: Message| {
-        println!("ack: {:?}", m.pkid);
+    let cb = move |_: Message| {
+        // println!("ack: {:?}", m.pkid);
         count.fetch_add(1, Ordering::SeqCst);
     };
 
@@ -66,19 +66,20 @@ fn simple_stress_publish() {
 
     let mut client = MqttClient::start(client_options, Some(callback)).expect("Coudn't start");
 
-    for i in 0..300 {
+    for i in 0..1010 {
         let payload = format!("{}. hello rust", i);
         client.publish("test/qos1/stress", payload.clone().into_bytes()).unwrap();
     }
 
-    thread::sleep(Duration::new(60, 0));
+    thread::sleep(Duration::new(15, 0));
     println!("QoS1 Final Count = {:?}", final_count.load(Ordering::SeqCst));
-    assert!(300 <= final_count.load(Ordering::SeqCst));
+    assert!(1010 <= final_count.load(Ordering::SeqCst));
 }
 
 #[test]
 fn stress_publish_with_reconnections() {
-    // env_logger::init().unwrap();
+    // pretty_env_logger::init().unwrap();
+
     let client_options = MqttOptions::new()
         .set_reconnect(3)
         .set_client_id("qos1-stress-reconnect-publish")
@@ -89,7 +90,8 @@ fn stress_publish_with_reconnections() {
     let final_count = count.clone();
     let count = count.clone();
 
-    let cb = move |m: Message| {
+    let cb = move |_: Message| {
+        // println!("ack: {:?}", m.pkid);
         count.fetch_add(1, Ordering::SeqCst);
     };
 
@@ -97,15 +99,15 @@ fn stress_publish_with_reconnections() {
 
     let mut client = MqttClient::start(client_options, Some(callback)).expect("Coudn't start");
 
-    for i in 0..300 {
+    for i in 0..1010 {
         let payload = format!("{}. hello rust", i);
-        if i == 100 || i == 150 || i == 200 {
+        if i == 250 || i == 500 || i == 750 {
             let _ = client.disconnect();
         }
         client.publish("test/qos1/reconnection_stress", payload.clone().into_bytes()).unwrap();
     }
 
-    thread::sleep(Duration::new(60, 0));
+    thread::sleep(Duration::new(15, 0));
     println!("QoS1 Final Count = {:?}", final_count.load(Ordering::SeqCst));
-    assert!(300 <= final_count.load(Ordering::SeqCst));
+    assert!(1010 <= final_count.load(Ordering::SeqCst));
 }

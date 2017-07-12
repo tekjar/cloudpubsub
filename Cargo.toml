@@ -7,7 +7,7 @@ authors = ["tekjar <k.teza1@gmail.com>"]
 rand = "0.3"
 quick-error = "1.1"
 log = "0.3"
-mqtt3 = {path = "../mqtt311"}
+mqtt311 = "0.1"
 openssl = { version = "0.9" }
 threadpool = "1"
 
