@@ -18,7 +18,7 @@ const MOSQUITTO_LOCAL: &'static str = "localhost:1883";
 #[test]
 fn acked_message() {
     let client_options = MqttOptions::new()
-        .set_reconnect(5)
+        .set_reconnect_interval(5)
         .set_client_id("test-reconnect-client")
         .set_broker(BROKER_ADDRESS);
 
@@ -46,7 +46,7 @@ fn acked_message() {
 fn simple_stress_publish() {
     // pretty_env_logger::init().unwrap();
     let client_options = MqttOptions::new()
-        .set_reconnect(3)
+        .set_reconnect_interval(3)
         .set_client_id("qos1-stress-publish")
         .set_broker(BROKER_ADDRESS);
 
@@ -81,7 +81,7 @@ fn stress_publish_with_reconnections() {
     // pretty_env_logger::init().unwrap();
 
     let client_options = MqttOptions::new()
-        .set_reconnect(3)
+        .set_reconnect_interval(3)
         .set_client_id("qos1-stress-reconnect-publish")
         .set_clean_session(false)
         .set_broker(BROKER_ADDRESS);

@@ -7,6 +7,7 @@ pub struct MqttOptions {
     pub keep_alive: Option<u16>,
     pub clean_session: bool,
     pub reconnect: u16,
+    pub first_reconnection_loop: bool,
     pub client_id: Option<String>,
     pub credentials: Option<(String, String)>,
     pub ca: Option<PathBuf>,
@@ -24,6 +25,7 @@ impl Default for MqttOptions {
             client_id: None,
             credentials: None,
             reconnect: 5,
+            first_reconnection_loop: false,
             ca: None,
             client_certs: None,
             storepack_sz: 100 * 1024,
@@ -109,8 +111,13 @@ impl MqttOptions {
     /// Time interval after which client should retry for new
     /// connection if there are any disconnections.
     /// By default, no retry will happen
-    pub fn set_reconnect(mut self, dur: u16) -> Self {
+    pub fn set_reconnect_interval(mut self, dur: u16) -> Self {
         self.reconnect = dur;
+        self
+    }
+
+    pub fn set_first_reconnect_loop(mut self, reconnect: bool) -> Self {
+        self.first_reconnection_loop = reconnect;
         self
     }
 
@@ -143,7 +150,7 @@ impl MqttOptions {
     /// use cloudpubsub::MqttOptions;
     /// let client = MqttOptions::new()
     ///                           .set_keep_alive(5)
-    ///                           .set_reconnect(5)
+    ///                           .set_reconnect_interval(5)
     ///                           .set_client_id("my-client-id")
     ///                           .set_clean_session(true)
     ///                           .set_broker("localhost:1883");

@@ -41,6 +41,29 @@ pub struct Publisher {
     pool: ThreadPool,
 }
 
+macro_rules! reconnect_loop {
+    ($publisher:ident) => ({
+        'reconnect: loop {
+                match $publisher.try_reconnect() {
+                    Ok(_) => {
+                        if let Err(e) = $publisher.await() {
+                            match e {
+                                AwaitError::Reconnect => continue 'reconnect,
+                                AwaitError::Io(_) => continue 'reconnect,
+                            }
+                        } else {
+                            break 'reconnect
+                        }
+                    }
+                    Err(e) => {
+                        error!("Try Reconnect Failed. Error = {:?}", e);
+                        continue 'reconnect;
+                    }
+                }
+            }
+    })
+}
+
 impl Publisher {
     pub fn connect(opts: MqttOptions, nw_request_rx: Receiver<PublishRequest>, callback: Option<MqttCallback>) -> Result<Self> {
 
@@ -62,15 +85,17 @@ impl Publisher {
             pool: ThreadPool::new(1),
         };
 
-        // Make initial tcp connection, send connect packet and
-        // return if connack packet has errors. Doing this here
-        // ensures that user doesn't have access to this object
-        // before mqtt connection
-        publisher.try_reconnect()?;
+        if publisher.opts.first_reconnection_loop {
+            reconnect_loop!(publisher);
+        } else {
+            // Make initial tcp connection, send connect packet and
+            // return if connack packet has errors. Doing this here
+            // ensures that user doesn't have access to this object
+            // before mqtt connection
+            publisher.try_reconnect()?;
+            publisher.await().unwrap();
+        }
 
-        // TODO: Return await()ed packet type and raise error in
-        // packet type is different then expected
-        publisher.await().unwrap();
         Ok(publisher)
     }
 
@@ -158,24 +183,7 @@ impl Publisher {
                 };
             }
 
-            'reconnect: loop {
-                match self.try_reconnect() {
-                    Ok(_) => {
-                        if let Err(e) = self.await() {
-                            match e {
-                                AwaitError::Reconnect => continue 'reconnect,
-                                AwaitError::Io(_) => continue 'reconnect,
-                            }
-                        } else {
-                            break 'reconnect
-                        }
-                    }
-                    Err(e) => {
-                        error!("Try Reconnect Failed. Error = {:?}", e);
-                        continue 'reconnect;
-                    }
-                }
-            }
+            reconnect_loop!(self)
         }
     }
 
@@ -228,10 +236,11 @@ impl Publisher {
         self.unbind();
 
         if !self.initial_connect {
-            error!("  Will try Reconnect in 5 seconds");
-            thread::sleep(Duration::new(5, 0));
+            error!("  Will try Reconnect in {} seconds", self.opts.reconnect);
+            thread::sleep(Duration::new(self.opts.reconnect as u64, 0));
         }
 
+        self.initial_connect = false;
         let mut stream = NetworkStream::connect(&self.opts.addr, self.opts.ca.clone(), self.opts.client_certs.clone())?;
         stream.set_read_timeout(Some(Duration::new(10, 0)))?;
         stream.set_write_timeout(Some(Duration::new(60, 0)))?;
@@ -307,6 +316,8 @@ impl Publisher {
 
         if self.initial_connect {
             self.initial_connect = false;
+        } else {
+            self.no_of_reconnections += 1;
         }
 
         info!("Mqtt connection successful !!");

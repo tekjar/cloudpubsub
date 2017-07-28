@@ -16,6 +16,8 @@ fn main() {
 
     let options = MqttOptions::new().set_client_id("publisher-1")
                                     .set_clean_session(false)
+                                    .set_first_reconnect_loop(true)
+                                    .set_reconnect_interval(10)
                                     //.set_broker("dev-mqtt-broker.atherengineering.in:1883");
                                     .set_broker("localhost:1883");
 
@@ -32,12 +34,12 @@ fn main() {
 
     let mut client = MqttClient::start(options, Some(on_publish)).expect("Start Error");
 
-    for i in 0..100 {
+    for _ in 0..100 {
         let len: usize = thread_rng().gen_range(0, 100_000);
         let mut v = vec![0; len];
         thread_rng().fill_bytes(&mut v);
 
-        client.userdata_publish("hello/world", v, "MYUNIQUEUSERDATA".to_string().into_bytes());
+        let _ = client.userdata_publish("hello/world", v, "MYUNIQUEUSERDATA".to_string().into_bytes());
     }
 
     // verifies pingreqs and responses
@@ -45,12 +47,12 @@ fn main() {
 
     // disconnections because of pingreq delays will be know during
     // subsequent publishes
-    for i in 0..100 {
+    for _ in 0..100 {
         let len: usize = thread_rng().gen_range(0, 100_000);
         let mut v = vec![0; len];
         thread_rng().fill_bytes(&mut v);
 
-        client.userdata_publish("hello/world", v, "MYUNIQUEUSERDATA".to_string().into_bytes());
+        let _ = client.userdata_publish("hello/world", v, "MYUNIQUEUSERDATA".to_string().into_bytes());
     }
 
     thread::sleep(Duration::from_secs(31));
